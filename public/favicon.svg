@@ -1,0 +1,28 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- background -->
+  <rect x="0" y="0" width="64" height="64" rx="14" fill="#F4F1EA"/>
+
+  <!-- open book -->
+  <g fill="#B8863B">
+    <path d="M32 39 C 26 36, 15 35, 8 37 L 8 51 C 15 49, 26 50, 32 53 Z"/>
+    <path d="M32 39 C 38 36, 49 35, 56 37 L 56 51 C 49 49, 38 50, 32 53 Z"/>
+  </g>
+  <g fill="none" stroke="#F4F1EA" stroke-width="1.4" stroke-linecap="round">
+    <path d="M12 39.5 C 17 38.5, 23 39.5, 28 42.2"/>
+    <path d="M12 44.5 C 17 43.5, 23 44.5, 28 47.2"/>
+    <path d="M52 39.5 C 47 38.5, 41 39.5, 36 42.2"/>
+    <path d="M52 44.5 C 47 43.5, 41 44.5, 36 47.2"/>
+  </g>
+  <rect x="30.5" y="36" width="3" height="17" fill="#8F6528"/>
+
+  <!-- bold single shark fin, iconic triangular silhouette -->
+  <path d="M32 6
+           C 33.5 6, 34.5 8, 35 11
+           C 36 18, 39 26, 46 32
+           C 47 32.8, 46.6 34, 45.4 33.9
+           C 38 33.4, 32.5 32, 29 29.5
+           C 27.6 28.5, 27 27, 27.3 25.3
+           C 28.3 19, 29.3 12, 30.5 8
+           C 30.9 6.7, 31.4 6, 32 6 Z"
+        fill="#2A2A28"/>
+</svg>
