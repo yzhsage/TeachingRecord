@@ -167,6 +167,19 @@ function scheduleSummary(cls) {
     })
     .join("、");
 }
+/* Same data as scheduleSummary, but split into one { day, time } entry
+   per schedule rule instead of a single joined string — used on the
+   class detail header so multiple sessions (e.g. 週二 + 週四) can be
+   laid out as separate, aligned lines instead of wrapping mid-string. */
+function scheduleLines(cls) {
+  const rules = (cls.scheduleRules || []).filter((r) => !r.effectiveTo || r.effectiveTo >= todayStr());
+  if (rules.length === 0) return [{ day: "尚未設定課表", time: "" }];
+  return rules.map((r) => {
+    const freq = r.interval === 2 ? "隔週" : "每週";
+    const from = r.effectiveFrom && r.effectiveFrom > todayStr() ? `（自 ${r.effectiveFrom} 起）` : "";
+    return { day: `${freq}週${WEEKDAY_FULL[r.dayOfWeek]}`, time: `${formatTimeRange(r.startTime, r.endTime)}${from}` };
+  });
+}
 /* Days until (and time of) this class's next occurrence from `fromDate`,
    inclusive of today. Used to order the class list by upcoming schedule. */
 function nextSessionInfo(cls, fromDate) {
@@ -285,6 +298,13 @@ function membershipAtDate(student, dateStr, attendanceData) {
 function getMembership(s) {
   if (isStoppedAt(s, todayStr())) return "stopped";
   return "active";
+}
+/* Number of students currently enrolled (試聽生 + 班內生), excluding
+   anyone marked 停班 — this is what should show as "N 位學生" anywhere
+   in the UI, as opposed to cls.students.length which also counts
+   students who have since left the class. */
+function activeStudentCount(cls) {
+  return (cls.students || []).filter((s) => getMembership(s) !== "stopped").length;
 }
 
 /* ------------------------------------------------------------------ */
@@ -603,12 +623,14 @@ function TopNav({ view, setView, saveStatus }) {
         <span className="brand-mark">課</span>
         <span className="brand-text">教學紀錄</span>
       </div>
-      <div className="nav-pills">
+      <div className="nav-pills nav-pills-center">
         <button className={"pill" + (view === "today" ? " pill-active" : "")} onClick={() => setView("today")}>日期</button>
         <button className={"pill" + (view !== "today" ? " pill-active" : "")} onClick={() => setView("classes")}>所有班級</button>
       </div>
-      <SaveIndicator status={saveStatus} />
-      <button className="pill logout-pill" onClick={() => signOut(auth)} title="登出">登出</button>
+      <div className="topnav-actions">
+        <SaveIndicator status={saveStatus} />
+        <button className="pill logout-pill" onClick={() => signOut(auth)} title="登出">登出</button>
+      </div>
     </div>
   );
 }
@@ -716,7 +738,7 @@ function TodayView({ classes, onOpenClass }) {
             <div className="class-card-dot" style={{ background: colorForClass(c.id) }} />
             <div className="class-card-body">
               <div className="class-card-title">{c.name}</div>
-              <div className="class-card-sub">{c.subject}{c.grade ? ` · ${c.grade}` : ""} · {c.students.length} 位學生</div>
+              <div className="class-card-sub">{c.subject}{c.grade ? ` · ${c.grade}` : ""} · {activeStudentCount(c)} 位學生</div>
             </div>
             {time && <div className="class-card-time"><Clock size={13} /> {time}</div>}
             <ChevronRight size={18} color="#9AA0A6" />
@@ -873,7 +895,7 @@ function ClassesView({ classes, showArchived, setShowArchived, onOpenClass, onAd
             <div className="class-card-dot" style={{ background: colorForClass(c.id) }} />
             <button className="class-card-body class-card-clickable" onClick={() => onOpenClass(c.id)}>
               <div className="class-card-title">{c.name}</div>
-              <div className="class-card-sub">{c.subject}{c.grade ? ` · ${c.grade}` : ""} · {c.students.length} 位學生 · {scheduleSummary(c)}</div>
+              <div className="class-card-sub">{c.subject}{c.grade ? ` · ${c.grade}` : ""} · {activeStudentCount(c)} 位學生 · {scheduleSummary(c)}</div>
             </button>
             <div className="row-actions">
               <IconBtn title={showArchived ? "還原" : "封存"} onClick={() => onArchive(c.id, !showArchived)}>
@@ -987,7 +1009,15 @@ function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, 
         <IconBtn onClick={() => goAdjacent(prevAdj)} disabled={!prevAdj} title={prevAdj ? `上一個上課班級：${prevAdj.cls.name}` : "沒有其他班級"}><ChevronLeft size={18} /></IconBtn>
         <div className="detail-title-wrap">
           <div className="detail-title">{cls.name}</div>
-          <div className="detail-sub">{cls.subject}{cls.grade ? ` · ${cls.grade}` : ""} · {scheduleSummary(cls)}</div>
+          <div className="detail-sub">{cls.subject}{cls.grade ? ` · ${cls.grade}` : ""}</div>
+          <div className="detail-schedule">
+            {scheduleLines(cls).map((line, i) => (
+              <div className="detail-schedule-line" key={i}>
+                <span className="detail-schedule-day">{line.day}</span>
+                {line.time && <span className="detail-schedule-time">{line.time}</span>}
+              </div>
+            ))}
+          </div>
         </div>
         <IconBtn onClick={() => goAdjacent(nextAdj)} disabled={!nextAdj} title={nextAdj ? `下一個上課班級：${nextAdj.cls.name}` : "沒有其他班級"}><ChevronRight size={18} /></IconBtn>
         <IconBtn title={cls.archived ? "取消封存" : "封存班級"} onClick={() => onArchive(!cls.archived)}>
@@ -2053,12 +2083,14 @@ const CSS = `
 .brand-text { font-family: 'Noto Serif TC', serif; font-weight: 700; font-size: 16px; }
 
 .nav-pills { display: flex; gap: 6px; }
+.nav-pills-center { margin: 0 auto; }
 .nav-pills-sub { margin-bottom: 2px; }
 .pill { border: 1px solid var(--line); background: var(--card); padding: 7px 14px; border-radius: 999px; font-size: 13px; color: var(--ink-soft); cursor: pointer; font-family: inherit; }
 .pill-sm { padding: 5px 12px; font-size: 12px; }
 .pill-active { background: var(--ink); color: white; border-color: var(--ink); }
 
-.save-indicator { margin-left: auto; font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+.topnav-actions { display: flex; align-items: center; gap: 10px; }
+.save-indicator { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
 
 .toast { position: sticky; top: 58px; z-index: 9; margin: 0 16px 0; max-width: 688px; margin-left: auto; margin-right: auto; background: var(--ink); color: white; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
 .toast button { background: none; border: none; color: white; opacity: 0.7; cursor: pointer; display: flex; }
@@ -2137,6 +2169,10 @@ const CSS = `
 .detail-title-wrap { flex: 1; min-width: 0; }
 .detail-title { font-family: 'Noto Serif TC', serif; font-weight: 700; font-size: 18px; }
 .detail-sub { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+.detail-schedule { margin-top: 3px; display: flex; flex-direction: column; gap: 1px; }
+.detail-schedule-line { display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; color: var(--ink-soft); }
+.detail-schedule-day { min-width: 60px; }
+.detail-schedule-time { font-family: 'IBM Plex Mono', monospace; }
 
 .tabbar { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
 .tab { display: flex; align-items: center; gap: 5px; white-space: nowrap; background: none; border: none; padding: 8px 10px; font-size: 13px; color: var(--ink-soft); cursor: pointer; border-bottom: 2px solid transparent; font-family: inherit; }
