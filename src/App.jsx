@@ -506,6 +506,10 @@ export default function App() {
   const [showArchived, setShowArchived] = useState(false);
   const [toast, setToast] = useState(null);
   const [returnView, setReturnView] = useState("today");
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [lastBackupAt, setLastBackupAt] = useState(undefined); // undefined = still loading
+  const fileInputRef = useRef(null);
 
   // Every write to `classes` goes through this so duplicate ids can never
   // accumulate, no matter what caused them.
@@ -542,6 +546,83 @@ export default function App() {
       return Array.from(map.values());
     });
   }
+
+  useEffect(() => {
+    (async () => {
+      const v = await loadKey("lastBackupAt", null);
+      setLastBackupAt(v);
+    })();
+  }, []);
+
+  const daysSinceBackup = lastBackupAt ? Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000) : null;
+  const backupOverdue = lastBackupAt !== undefined && (lastBackupAt === null || daysSinceBackup >= 7);
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const records = {};
+      for (const c of classes) {
+        records[c.id] = {
+          attendance: await loadKey(`attendance:${c.id}`, {}),
+          quiz: await loadKey(`quiz:${c.id}`, { columns: [], scores: {} }),
+          exam: await loadKey(`exam:${c.id}`, { columns: [], scores: {} }),
+          fee: c.hasFee ? await loadKey(`fee:${c.id}`, { charges: [] }) : null,
+        };
+      }
+      const bundle = { exportedAt: new Date().toISOString(), classIndex: classes, records };
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `教學紀錄備份_${todayStr()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const nowIso = new Date().toISOString();
+      await saveKey("lastBackupAt", nowIso);
+      setLastBackupAt(nowIso);
+      setToast("備份檔案已下載。");
+    } catch (e) {
+      setToast("匯出失敗，請再試一次。");
+    }
+    setExporting(false);
+  }
+
+  async function importBundleText(text) {
+    try {
+      const bundle = JSON.parse(text);
+      if (!bundle || !Array.isArray(bundle.classIndex) || !bundle.records) {
+        setToast("備份內容格式不正確。");
+        return;
+      }
+      for (const c of bundle.classIndex) {
+        const rec = bundle.records[c.id];
+        if (!rec) continue;
+        if (rec.attendance) await saveKey(`attendance:${c.id}`, rec.attendance);
+        if (rec.quiz) await saveKey(`quiz:${c.id}`, rec.quiz);
+        if (rec.exam) await saveKey(`exam:${c.id}`, rec.exam);
+        if (rec.fee) await saveKey(`fee:${c.id}`, rec.fee);
+      }
+      importClasses(bundle.classIndex);
+      setToast(`已從備份還原 ${bundle.classIndex.length} 個班級的資料。`);
+      return true;
+    } catch (e) {
+      setToast("讀取備份內容失敗，請確認格式沒有被截斷或修改過。");
+      return false;
+    }
+  }
+  async function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      await importBundleText(text);
+    } catch (e) {
+      setToast("讀取備份檔案失敗，手機瀏覽器有時候選檔會失敗，可以試試看下面「貼上備份內容」的方式。");
+    }
+  }
   function openClass(id, tab, date) {
     setReturnView(view);
     setSelectedId(id);
@@ -570,8 +651,39 @@ export default function App() {
 
   return (
     <Shell>
-      <TopNav view={view} setView={setView} saveStatus={classIdxStatus} />
+      <TopNav
+        view={view}
+        setView={setView}
+        saveStatus={classIdxStatus}
+        backupOverdue={backupOverdue}
+        onToggleBackup={() => setBackupOpen((v) => !v)}
+      />
       <Toast message={toast} onClose={() => setToast(null)} />
+      {backupOpen && (
+        <div className="view-pad" style={{ paddingBottom: 0 }}>
+          <div className="form-card">
+            <div className="form-title">資料備份</div>
+            <div className="section-hint" style={{ marginBottom: 10 }}>建議定期匯出備份檔存到自己的裝置，避免資料遺失。匯入備份會用檔案內容覆蓋同 ID 的班級，其他班級不受影響。</div>
+            <div className="row-actions">
+              <button className="btn-primary btn-sm" disabled={exporting} onClick={handleExport}>{exporting ? "匯出中…" : "匯出全部資料"}</button>
+              <button className="btn-ghost btn-sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>選擇備份檔案</button>
+              <input ref={fileInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={handleImportFile} />
+            </div>
+            <PasteImport onImport={importBundleText} />
+          </div>
+        </div>
+      )}
+      {backupOverdue && !backupOpen && (
+        <div className="view-pad" style={{ paddingBottom: 0 }}>
+          <div className="backup-warning">
+            <span>
+              {lastBackupAt === null ? "還沒有備份過資料。" : `已經 ${daysSinceBackup} 天沒有備份資料了。`}
+              建議定期匯出，避免資料遺失。
+            </span>
+            <button className="btn-primary btn-sm" onClick={() => setBackupOpen(true)}>立即備份</button>
+          </div>
+        </div>
+      )}
       {view === "today" && (
         <TodayView classes={classes.filter((c) => !c.archived)} onOpenClass={openClass} />
       )}
@@ -584,8 +696,6 @@ export default function App() {
           onAddClass={addClass}
           onArchive={(id, archived) => updateClass(id, (c) => ({ ...c, archived }))}
           onDelete={deleteClass}
-          onToast={setToast}
-          onImportClasses={importClasses}
         />
       )}
       {view === "detail" && selectedClass && (
@@ -616,7 +726,7 @@ function Shell({ children }) {
 /* Top nav                                                              */
 /* ------------------------------------------------------------------ */
 
-function TopNav({ view, setView, saveStatus }) {
+function TopNav({ view, setView, saveStatus, backupOverdue, onToggleBackup }) {
   return (
     <div className="topnav">
       <div className="brand">
@@ -629,6 +739,7 @@ function TopNav({ view, setView, saveStatus }) {
       </div>
       <div className="topnav-actions">
         <SaveIndicator status={saveStatus} />
+        <button className={"pill" + (backupOverdue ? " pill-warning" : "")} onClick={onToggleBackup} title="資料備份">備份{backupOverdue ? " ⚠" : ""}</button>
         <button className="pill logout-pill" onClick={() => signOut(auth)} title="登出">登出</button>
       </div>
     </div>
@@ -755,22 +866,9 @@ function TodayView({ classes, onOpenClass }) {
 /* Classes list / management view                                      */
 /* ------------------------------------------------------------------ */
 
-function ClassesView({ classes, showArchived, setShowArchived, onOpenClass, onAddClass, onArchive, onDelete, onToast, onImportClasses }) {
+function ClassesView({ classes, showArchived, setShowArchived, onOpenClass, onAddClass, onArchive, onDelete }) {
   const [creating, setCreating] = useState(false);
-  const [backupOpen, setBackupOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [lastBackupAt, setLastBackupAt] = useState(undefined); // undefined = still loading
-  const fileInputRef = useRef(null);
 
-  useEffect(() => {
-    (async () => {
-      const v = await loadKey("lastBackupAt", null);
-      setLastBackupAt(v);
-    })();
-  }, []);
-
-  const daysSinceBackup = lastBackupAt ? Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000) : null;
-  const backupOverdue = lastBackupAt !== undefined && (lastBackupAt === null || daysSinceBackup >= 7);
   const list = classes
     .filter((c) => !!c.archived === showArchived)
     .map((c) => ({ c, next: nextSessionInfo(c, todayStr()) }))
@@ -780,110 +878,19 @@ function ClassesView({ classes, showArchived, setShowArchived, onOpenClass, onAd
     })
     .map((x) => x.c);
 
-  async function handleExport() {
-    setExporting(true);
-    try {
-      const records = {};
-      for (const c of classes) {
-        records[c.id] = {
-          attendance: await loadKey(`attendance:${c.id}`, {}),
-          quiz: await loadKey(`quiz:${c.id}`, { columns: [], scores: {} }),
-          exam: await loadKey(`exam:${c.id}`, { columns: [], scores: {} }),
-          fee: c.hasFee ? await loadKey(`fee:${c.id}`, { charges: [] }) : null,
-        };
-      }
-      const bundle = { exportedAt: new Date().toISOString(), classIndex: classes, records };
-      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `教學紀錄備份_${todayStr()}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      const nowIso = new Date().toISOString();
-      await saveKey("lastBackupAt", nowIso);
-      setLastBackupAt(nowIso);
-      onToast("備份檔案已下載。");
-    } catch (e) {
-      onToast("匯出失敗，請再試一次。");
-    }
-    setExporting(false);
-  }
-
-  async function importBundleText(text) {
-    try {
-      const bundle = JSON.parse(text);
-      if (!bundle || !Array.isArray(bundle.classIndex) || !bundle.records) {
-        onToast("備份內容格式不正確。");
-        return;
-      }
-      for (const c of bundle.classIndex) {
-        const rec = bundle.records[c.id];
-        if (!rec) continue;
-        if (rec.attendance) await saveKey(`attendance:${c.id}`, rec.attendance);
-        if (rec.quiz) await saveKey(`quiz:${c.id}`, rec.quiz);
-        if (rec.exam) await saveKey(`exam:${c.id}`, rec.exam);
-        if (rec.fee) await saveKey(`fee:${c.id}`, rec.fee);
-      }
-      onImportClasses(bundle.classIndex);
-      onToast(`已從備份還原 ${bundle.classIndex.length} 個班級的資料。`);
-      return true;
-    } catch (e) {
-      onToast("讀取備份內容失敗，請確認格式沒有被截斷或修改過。");
-      return false;
-    }
-  }
-  async function handleImportFile(e) {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    try {
-      const text = await file.text();
-      await importBundleText(text);
-    } catch (e) {
-      onToast("讀取備份檔案失敗，手機瀏覽器有時候選檔會失敗，可以試試看下面「貼上備份內容」的方式。");
-    }
-  }
-
   return (
     <div className="view-pad">
-      {backupOverdue && (
-        <div className="backup-warning">
-          <span>
-            {lastBackupAt === null ? "還沒有備份過資料。" : `已經 ${daysSinceBackup} 天沒有備份資料了。`}
-            建議定期匯出，避免資料遺失。
-          </span>
-          <button className="btn-primary btn-sm" onClick={() => setBackupOpen(true)}>立即備份</button>
-        </div>
-      )}
       <div className="row-between">
         <div className="nav-pills nav-pills-sub">
           <button className={"pill pill-sm" + (!showArchived ? " pill-active" : "")} onClick={() => setShowArchived(false)}>進行中</button>
           <button className={"pill pill-sm" + (showArchived ? " pill-active" : "")} onClick={() => setShowArchived(true)}>已封存</button>
         </div>
         <div className="row-actions">
-          <button className={"btn-ghost btn-sm" + (backupOverdue ? " btn-ghost-warning" : "")} onClick={() => setBackupOpen((v) => !v)}>資料備份{backupOverdue ? " ⚠" : ""}</button>
           {!showArchived && (
             <button className="btn-primary btn-sm" onClick={() => setCreating(true)}><Plus size={16} /> 新增班級</button>
           )}
         </div>
       </div>
-
-      {backupOpen && (
-        <div className="form-card">
-          <div className="form-title">資料備份</div>
-          <div className="section-hint" style={{ marginBottom: 10 }}>建議定期匯出備份檔存到自己的裝置，避免資料遺失。匯入備份會用檔案內容覆蓋同 ID 的班級，其他班級不受影響。</div>
-          <div className="row-actions">
-            <button className="btn-primary btn-sm" disabled={exporting} onClick={handleExport}>{exporting ? "匯出中…" : "匯出全部資料"}</button>
-            <button className="btn-ghost btn-sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>選擇備份檔案</button>
-            <input ref={fileInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={handleImportFile} />
-          </div>
-          <PasteImport onImport={importBundleText} />
-        </div>
-      )}
-
 
       {creating && (
         <NewClassForm onCancel={() => setCreating(false)} onCreate={(cls) => { onAddClass(cls); setCreating(false); }} />
@@ -2088,6 +2095,7 @@ const CSS = `
 .pill { border: 1px solid var(--line); background: var(--card); padding: 7px 14px; border-radius: 999px; font-size: 13px; color: var(--ink-soft); cursor: pointer; font-family: inherit; }
 .pill-sm { padding: 5px 12px; font-size: 12px; }
 .pill-active { background: var(--ink); color: white; border-color: var(--ink); }
+.pill-warning { background: #FBEAE9; color: #8C332E; border-color: #F0C6C3; }
 
 .topnav-actions { display: flex; align-items: center; gap: 10px; }
 .save-indicator { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
@@ -2096,7 +2104,6 @@ const CSS = `
 .toast button { background: none; border: none; color: white; opacity: 0.7; cursor: pointer; display: flex; }
 
 .backup-warning { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #FBEAE9; border: 1px solid #F0C6C3; color: #8C332E; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; flex-wrap: wrap; }
-.btn-ghost-warning { border-color: #F0C6C3; color: #B23A34; }
 
 .view-pad { padding: 16px; max-width: 720px; margin: 0 auto; }
 
