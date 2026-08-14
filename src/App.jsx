@@ -1088,7 +1088,12 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
   function setStatusFor(studentId, value) {
     const wholeDayStatus = value === "延課" || value === "假期";
     if (wholeDayStatus) {
-      setDay((d) => ({ ...d, records: Object.fromEntries(cls.students.map((s) => [s.id, value])) }));
+      setDay((d) => ({
+        ...d,
+        records: Object.fromEntries(
+          cls.students.filter((s) => membershipAtDate(s, date, data) !== "stopped").map((s) => [s.id, value])
+        ),
+      }));
       onUpdateClass((c) => {
         const overrides = (c.overrides || []).filter((o) => o.date !== date);
         overrides.push({ date, action: "cancel", note: value, time: "" });
@@ -1122,7 +1127,13 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
       overrides.push({ date, action: "cancel", note: cancelReason, time: "" });
       return { ...c, overrides };
     });
-    setDay((d) => ({ ...d, note: cancelReason, records: Object.fromEntries(cls.students.map((s) => [s.id, "延課"])) }));
+    setDay((d) => ({
+      ...d,
+      note: cancelReason,
+      records: Object.fromEntries(
+        cls.students.filter((s) => membershipAtDate(s, date, data) !== "stopped").map((s) => [s.id, "延課"])
+      ),
+    }));
     setCancelOpen(false);
     setCancelReason("");
   }
