@@ -1393,9 +1393,18 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
     .filter((c) => !withSegment || segmentFilter === "all" || c.segment === segmentFilter)
     .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
+  // 已停班的學生：只有在這個班曾經留下成績資料時才繼續顯示（保留歷史紀錄），
+  // 否則不出現在名單裡（例如停班之後才新增的考試）。
+  const hasAnyScoreEverywhere = (s) =>
+    data.columns.some((col) => {
+      const v = (data.scores[col.id] || {})[s.id]?.score;
+      return v !== undefined && v !== "";
+    });
+  const rosterStudents = cls.students.filter((s) => getMembership(s) !== "stopped" || hasAnyScoreEverywhere(s));
+
   const pooled = [];
   filteredColumns.forEach((col) => {
-    cls.students.forEach((s) => {
+    rosterStudents.forEach((s) => {
       const v = (data.scores[col.id] || {})[s.id]?.score;
       if (v !== undefined && v !== "" && !Number.isNaN(Number(v))) pooled.push(Number(v));
     });
@@ -1403,7 +1412,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   const classAvg = mean(pooled);
   const classStd = stddev(pooled);
 
-  const studentStatsBase = cls.students.map((s) => {
+  const studentStatsBase = rosterStudents.map((s) => {
     const vals = filteredColumns
       .map((col) => (data.scores[col.id] || {})[s.id]?.score)
       .filter((v) => v !== undefined && v !== "" && !Number.isNaN(Number(v)))
@@ -1420,14 +1429,14 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   });
 
   const chartData = filteredColumns.map((col) => {
-    const colVals = cls.students
+    const colVals = rosterStudents
       .map((s) => (data.scores[col.id] || {})[s.id]?.score)
       .filter((v) => v !== undefined && v !== "" && !Number.isNaN(Number(v)))
       .map(Number);
     const row = { name: col.name, 班平均: mean(colVals) };
     if (focusStudentId) {
       const v = (data.scores[col.id] || {})[focusStudentId]?.score;
-      row[cls.students.find((s) => s.id === focusStudentId)?.name || "個人"] =
+      row[rosterStudents.find((s) => s.id === focusStudentId)?.name || "個人"] =
         v !== undefined && v !== "" && !Number.isNaN(Number(v)) ? Number(v) : null;
     }
     return row;
@@ -1514,7 +1523,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
               <span className="section-hint">成績趨勢</span>
               <select className="filter-select" value={focusStudentId} onChange={(e) => setFocusStudentId(e.target.value)}>
                 <option value="">只看全班平均</option>
-                {cls.students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {rosterStudents.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <ResponsiveContainer width="100%" height={220}>
@@ -1526,7 +1535,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Line type="monotone" dataKey="班平均" stroke={CHART_COLORS[0]} strokeWidth={2} connectNulls dot={{ r: 3 }} />
                 {focusStudentId && (
-                  <Line type="monotone" dataKey={cls.students.find((s) => s.id === focusStudentId)?.name || "個人"} stroke={CHART_COLORS[1]} strokeWidth={2} connectNulls dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey={rosterStudents.find((s) => s.id === focusStudentId)?.name || "個人"} stroke={CHART_COLORS[1]} strokeWidth={2} connectNulls dot={{ r: 3 }} />
                 )}
               </LineChart>
             </ResponsiveContainer>
@@ -1547,7 +1556,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
                 </tr>
               </thead>
               <tbody>
-                {cls.students.map((s) => (
+                {rosterStudents.map((s) => (
                   <tr key={s.id}>
                     <td className="matrix-row-head">{s.name}</td>
                     {filteredColumns.map((col) => {
