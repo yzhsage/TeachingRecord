@@ -1587,6 +1587,8 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
 function FeeTab({ cls }) {
   const [adding, setAdding] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("all"); // all | unpaid | paid
+  const [studentFilter, setStudentFilter] = useState(null); // studentId | null
   const storageKeyName = `fee:${cls.id}`;
   const [data, setData, ready] = useCachedStore(storageKeyName, { charges: [] });
 
@@ -1610,7 +1612,33 @@ function FeeTab({ cls }) {
     return <div className="empty-note" style={{ marginTop: 12 }}>尚未新增學生，請至「學生與課表」分頁新增。</div>;
   }
 
-  const sorted = data.charges.slice().sort((a, b) => (b.periodStart || "").localeCompare(a.periodStart || ""));
+  // Build per-student status so it's possible to see at a glance who has
+  // paid and who hasn't, instead of scanning a flat chronological list.
+  const perStudent = cls.students.map((s) => {
+    const charges = data.charges.filter((c) => c.studentId === s.id);
+    const unpaid = charges.filter((c) => !c.paid);
+    const unpaidTotal = unpaid.reduce((sum, c) => sum + num(c.tuition) + num(c.materials) - num(c.discount), 0);
+    const paidTotal = charges.filter((c) => c.paid).reduce((sum, c) => sum + num(c.tuition) + num(c.materials) - num(c.discount), 0);
+    const state = unpaid.length > 0 ? "unpaid" : charges.length > 0 ? "paid" : "none";
+    return { student: s, charges, unpaidCount: unpaid.length, unpaidTotal, paidTotal, state };
+  }).filter((row) => row.state !== "none" || getMembership(row.student) !== "stopped");
+
+  const order = { unpaid: 0, none: 1, paid: 2 };
+  const overview = perStudent.slice().sort((a, b) => order[a.state] - order[b.state] || a.student.name.localeCompare(b.student.name, "zh-Hant"));
+
+  const unpaidCountTotal = perStudent.filter((r) => r.state === "unpaid").length;
+  const unpaidAmountTotal = perStudent.reduce((sum, r) => sum + r.unpaidTotal, 0);
+  const paidAmountTotal = perStudent.reduce((sum, r) => sum + r.paidTotal, 0);
+
+  function toggleStudentFilter(id) {
+    setStudentFilter((prev) => (prev === id ? null : id));
+  }
+
+  let filtered = data.charges;
+  if (statusFilter === "unpaid") filtered = filtered.filter((c) => !c.paid);
+  if (statusFilter === "paid") filtered = filtered.filter((c) => c.paid);
+  if (studentFilter) filtered = filtered.filter((c) => c.studentId === studentFilter);
+  const sorted = filtered.slice().sort((a, b) => (b.periodStart || "").localeCompare(a.periodStart || ""));
 
   return (
     <div>
@@ -1624,6 +1652,42 @@ function FeeTab({ cls }) {
 
       {adding && <NewChargeForm students={cls.students.filter((s) => getMembership(s) !== "stopped")} onCancel={() => setAdding(false)} onCreate={addCharge} />}
 
+      <div className="fee-overview" style={{ marginTop: 14 }}>
+        <div className="fee-overview-stats">
+          <span className="fee-stat fee-stat-bad">未收 {unpaidCountTotal} 人・${unpaidAmountTotal}</span>
+          <span className="fee-stat fee-stat-good">已收金額 ${paidAmountTotal}</span>
+        </div>
+        <div className="fee-chip-grid">
+          {overview.map(({ student, unpaidCount, unpaidTotal, state }) => (
+            <button
+              key={student.id}
+              type="button"
+              className={"fee-chip fee-chip-" + state + (studentFilter === student.id ? " fee-chip-active" : "")}
+              onClick={() => toggleStudentFilter(student.id)}
+              title={state === "unpaid" ? `未收 $${unpaidTotal}` : state === "paid" ? "已收清" : "尚無收費紀錄"}
+            >
+              <span className="fee-chip-name">{student.name}</span>
+              <span className="fee-chip-status">
+                {state === "unpaid" ? `未收 $${unpaidTotal}` : state === "paid" ? "已收清" : "無紀錄"}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="row-between" style={{ marginTop: 14 }}>
+        <div className="segmented">
+          <button className={"segmented-btn" + (statusFilter === "all" ? " active" : "")} onClick={() => setStatusFilter("all")}>全部</button>
+          <button className={"segmented-btn" + (statusFilter === "unpaid" ? " active" : "")} onClick={() => setStatusFilter("unpaid")}>未收</button>
+          <button className={"segmented-btn" + (statusFilter === "paid" ? " active" : "")} onClick={() => setStatusFilter("paid")}>已收</button>
+        </div>
+        {studentFilter && (
+          <button className="btn-ghost btn-xs" onClick={() => setStudentFilter(null)}>
+            清除「{cls.students.find((s) => s.id === studentFilter)?.name}」篩選
+          </button>
+        )}
+      </div>
+
       <div className="card-list" style={{ marginTop: 12 }}>
         {sorted.map((c) => {
           const student = cls.students.find((s) => s.id === c.studentId);
@@ -1635,7 +1699,7 @@ function FeeTab({ cls }) {
                   <div className="fee-card-name">{student ? student.name : "（已移除的學生）"}</div>
                   <div className="fee-card-period">{c.periodStart || "?"} ～ {c.periodEnd || "?"}</div>
                 </div>
-                <span className={"tag " + (c.paid ? "tag-good" : "tag-muted")}>{c.paid ? `已收 ${c.paidDate}` : "未收"}</span>
+                <span className={"tag " + (c.paid ? "tag-good" : "tag-bad")}>{c.paid ? `已收 ${c.paidDate}` : "未收"}</span>
               </div>
               <div className="fee-card-breakdown">
                 <span>金額 {num(c.tuition)}</span>
@@ -1654,7 +1718,7 @@ function FeeTab({ cls }) {
             </div>
           );
         })}
-        {sorted.length === 0 && <div className="empty-note">尚未新增任何收費紀錄。</div>}
+        {sorted.length === 0 && <div className="empty-note">{data.charges.length === 0 ? "尚未新增任何收費紀錄。" : "沒有符合篩選條件的收費紀錄。"}</div>}
       </div>
     </div>
   );
@@ -2213,6 +2277,28 @@ const CSS = `
 .tag { font-size: 11px; padding: 4px 9px; border-radius: 999px; font-weight: 500; }
 .tag-good { background: #EAF3EC; color: #3F7D5C; }
 .tag-muted { background: #EEEEEC; color: #71757A; }
+.tag-bad { background: #F7E5E3; color: #B23A34; }
+
+.fee-overview-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.fee-stat { font-size: 12.5px; font-weight: 600; padding: 5px 11px; border-radius: 999px; }
+.fee-stat-bad { background: #F7E5E3; color: #B23A34; }
+.fee-stat-good { background: #EAF3EC; color: #3F7D5C; }
+.fee-chip-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.fee-chip { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border-radius: 10px; padding: 7px 12px; border: 1px solid transparent; cursor: pointer; font-family: inherit; text-align: left; transition: transform 0.1s ease; }
+.fee-chip:active { transform: scale(0.97); }
+.fee-chip-name { font-size: 13px; font-weight: 700; color: var(--ink); }
+.fee-chip-status { font-size: 11px; font-weight: 600; }
+.fee-chip-unpaid { background: #F7E5E3; }
+.fee-chip-unpaid .fee-chip-status { color: #B23A34; }
+.fee-chip-paid { background: #EAF3EC; }
+.fee-chip-paid .fee-chip-status { color: #3F7D5C; }
+.fee-chip-none { background: #EEEEEC; }
+.fee-chip-none .fee-chip-status { color: #71757A; }
+.fee-chip-active { border-color: var(--brass); box-shadow: 0 0 0 2px var(--brass-soft); }
+
+.segmented { display: inline-flex; background: #EEEEEC; border-radius: 10px; padding: 3px; gap: 2px; }
+.segmented-btn { border: none; background: transparent; font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink-soft); padding: 5px 12px; border-radius: 8px; cursor: pointer; }
+.segmented-btn.active { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
 
 .roll-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .roll-row { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; flex-wrap: wrap; }
