@@ -1584,6 +1584,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
 /* ------------------------------------------------------------------ */
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
+function isOverdue(c) { return !c.paid && c.periodEnd && c.periodEnd < todayStr(); }
 
 function FeeTab({ cls }) {
   const [adding, setAdding] = useState(false);
@@ -1613,21 +1614,26 @@ function FeeTab({ cls }) {
   }
 
   // Build per-student status so it's possible to see at a glance who has
-  // paid and who hasn't, instead of scanning a flat chronological list.
+  // paid, who hasn't, and who's overdue — instead of scanning a flat
+  // chronological list.
   const perStudent = cls.students.map((s) => {
     const charges = data.charges.filter((c) => c.studentId === s.id);
     const unpaid = charges.filter((c) => !c.paid);
+    const overdue = unpaid.filter(isOverdue);
     const unpaidTotal = unpaid.reduce((sum, c) => sum + num(c.tuition) + num(c.materials) - num(c.discount), 0);
+    const overdueTotal = overdue.reduce((sum, c) => sum + num(c.tuition) + num(c.materials) - num(c.discount), 0);
     const paidTotal = charges.filter((c) => c.paid).reduce((sum, c) => sum + num(c.tuition) + num(c.materials) - num(c.discount), 0);
-    const state = unpaid.length > 0 ? "unpaid" : charges.length > 0 ? "paid" : "none";
-    return { student: s, charges, unpaidCount: unpaid.length, unpaidTotal, paidTotal, state };
+    const state = overdue.length > 0 ? "overdue" : unpaid.length > 0 ? "unpaid" : charges.length > 0 ? "paid" : "none";
+    return { student: s, charges, unpaidCount: unpaid.length, unpaidTotal, overdueCount: overdue.length, overdueTotal, paidTotal, state };
   }).filter((row) => row.state !== "none" || getMembership(row.student) !== "stopped");
 
-  const order = { unpaid: 0, none: 1, paid: 2 };
+  const order = { overdue: 0, unpaid: 1, none: 2, paid: 3 };
   const overview = perStudent.slice().sort((a, b) => order[a.state] - order[b.state] || a.student.name.localeCompare(b.student.name, "zh-Hant"));
 
-  const unpaidCountTotal = perStudent.filter((r) => r.state === "unpaid").length;
-  const unpaidAmountTotal = perStudent.reduce((sum, r) => sum + r.unpaidTotal, 0);
+  const overdueCountTotal = perStudent.filter((r) => r.state === "overdue").length;
+  const overdueAmountTotal = perStudent.reduce((sum, r) => sum + r.overdueTotal, 0);
+  const unpaidNotOverdueCountTotal = perStudent.filter((r) => r.state === "unpaid").length;
+  const unpaidNotOverdueAmountTotal = perStudent.reduce((sum, r) => sum + (r.unpaidTotal - r.overdueTotal), 0);
   const paidAmountTotal = perStudent.reduce((sum, r) => sum + r.paidTotal, 0);
 
   function toggleStudentFilter(id) {
@@ -1635,7 +1641,8 @@ function FeeTab({ cls }) {
   }
 
   let filtered = data.charges;
-  if (statusFilter === "unpaid") filtered = filtered.filter((c) => !c.paid);
+  if (statusFilter === "unpaid") filtered = filtered.filter((c) => !c.paid && !isOverdue(c));
+  if (statusFilter === "overdue") filtered = filtered.filter(isOverdue);
   if (statusFilter === "paid") filtered = filtered.filter((c) => c.paid);
   if (studentFilter) filtered = filtered.filter((c) => c.studentId === studentFilter);
   const sorted = filtered.slice().sort((a, b) => (b.periodStart || "").localeCompare(a.periodStart || ""));
@@ -1654,21 +1661,22 @@ function FeeTab({ cls }) {
 
       <div className="fee-overview" style={{ marginTop: 14 }}>
         <div className="fee-overview-stats">
-          <span className="fee-stat fee-stat-bad">未收 {unpaidCountTotal} 人・${unpaidAmountTotal}</span>
+          <span className="fee-stat fee-stat-overdue">逾期 {overdueCountTotal} 人・${overdueAmountTotal}</span>
+          <span className="fee-stat fee-stat-bad">未收（未逾期）{unpaidNotOverdueCountTotal} 人・${unpaidNotOverdueAmountTotal}</span>
           <span className="fee-stat fee-stat-good">已收金額 ${paidAmountTotal}</span>
         </div>
         <div className="fee-chip-grid">
-          {overview.map(({ student, unpaidCount, unpaidTotal, state }) => (
+          {overview.map(({ student, unpaidTotal, overdueTotal, state }) => (
             <button
               key={student.id}
               type="button"
               className={"fee-chip fee-chip-" + state + (studentFilter === student.id ? " fee-chip-active" : "")}
               onClick={() => toggleStudentFilter(student.id)}
-              title={state === "unpaid" ? `未收 $${unpaidTotal}` : state === "paid" ? "已收清" : "尚無收費紀錄"}
+              title={state === "overdue" ? `逾期 $${overdueTotal}` : state === "unpaid" ? `未收 $${unpaidTotal}` : state === "paid" ? "已收清" : "尚無收費紀錄"}
             >
               <span className="fee-chip-name">{student.name}</span>
               <span className="fee-chip-status">
-                {state === "unpaid" ? `未收 $${unpaidTotal}` : state === "paid" ? "已收清" : "無紀錄"}
+                {state === "overdue" ? `逾期 $${overdueTotal}` : state === "unpaid" ? `未收 $${unpaidTotal}` : state === "paid" ? "已收清" : "無紀錄"}
               </span>
             </button>
           ))}
@@ -1678,6 +1686,7 @@ function FeeTab({ cls }) {
       <div className="row-between" style={{ marginTop: 14 }}>
         <div className="segmented">
           <button className={"segmented-btn" + (statusFilter === "all" ? " active" : "")} onClick={() => setStatusFilter("all")}>全部</button>
+          <button className={"segmented-btn" + (statusFilter === "overdue" ? " active" : "")} onClick={() => setStatusFilter("overdue")}>逾期</button>
           <button className={"segmented-btn" + (statusFilter === "unpaid" ? " active" : "")} onClick={() => setStatusFilter("unpaid")}>未收</button>
           <button className={"segmented-btn" + (statusFilter === "paid" ? " active" : "")} onClick={() => setStatusFilter("paid")}>已收</button>
         </div>
@@ -1692,6 +1701,7 @@ function FeeTab({ cls }) {
         {sorted.map((c) => {
           const student = cls.students.find((s) => s.id === c.studentId);
           const total = num(c.tuition) + num(c.materials) - num(c.discount);
+          const overdue = isOverdue(c);
           return (
             <div key={c.id} className="fee-card">
               <div className="fee-card-top">
@@ -1699,7 +1709,9 @@ function FeeTab({ cls }) {
                   <div className="fee-card-name">{student ? student.name : "（已移除的學生）"}</div>
                   <div className="fee-card-period">{c.periodStart || "?"} ～ {c.periodEnd || "?"}</div>
                 </div>
-                <span className={"tag " + (c.paid ? "tag-good" : "tag-bad")}>{c.paid ? `已收 ${c.paidDate}` : "未收"}</span>
+                <span className={"tag " + (c.paid ? "tag-good" : overdue ? "tag-overdue" : "tag-bad")}>
+                  {c.paid ? `已收 ${c.paidDate}` : overdue ? "逾期" : "未收"}
+                </span>
               </div>
               <div className="fee-card-breakdown">
                 <span>金額 {num(c.tuition)}</span>
@@ -2278,9 +2290,11 @@ const CSS = `
 .tag-good { background: #EAF3EC; color: #3F7D5C; }
 .tag-muted { background: #EEEEEC; color: #71757A; }
 .tag-bad { background: #F7E5E3; color: #B23A34; }
+.tag-overdue { background: #B23A34; color: white; }
 
 .fee-overview-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .fee-stat { font-size: 12.5px; font-weight: 600; padding: 5px 11px; border-radius: 999px; }
+.fee-stat-overdue { background: #B23A34; color: white; }
 .fee-stat-bad { background: #F7E5E3; color: #B23A34; }
 .fee-stat-good { background: #EAF3EC; color: #3F7D5C; }
 .fee-chip-grid { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -2288,6 +2302,9 @@ const CSS = `
 .fee-chip:active { transform: scale(0.97); }
 .fee-chip-name { font-size: 13px; font-weight: 700; color: var(--ink); }
 .fee-chip-status { font-size: 11px; font-weight: 600; }
+.fee-chip-overdue { background: #B23A34; }
+.fee-chip-overdue .fee-chip-name { color: white; }
+.fee-chip-overdue .fee-chip-status { color: white; }
 .fee-chip-unpaid { background: #F7E5E3; }
 .fee-chip-unpaid .fee-chip-status { color: #B23A34; }
 .fee-chip-paid { background: #EAF3EC; }
