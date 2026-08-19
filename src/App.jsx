@@ -1076,14 +1076,18 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
 
   const status = useDebouncedSave(data, storageKeyName, ready);
 
-  const dayData = data[date] || { note: "", content: "", records: {} };
+  const dayData = { note: "", content: "", records: {}, ...(data[date] || {}) };
   const session = getSessionInfo(cls, date);
   const isSession = isSessionDay(cls, date, data);
   const boundary = earliestScheduledDate(cls, Object.keys(data).filter((k) => hasSessionRecord(data, k)));
   const atStart = !!(boundary && date <= boundary);
 
   function setDay(updater) {
-    setData((prev) => ({ ...prev, [date]: updater({ note: "", content: "", records: {}, ...(prev[date] || {}) }) }));
+    setData((prev) => {
+      const base = { note: "", content: "", records: {}, ...(prev[date] || {}) };
+      if (!base.records) base.records = {};
+      return { ...prev, [date]: updater(base) };
+    });
   }
   function setStatusFor(studentId, value) {
     const wholeDayStatus = value === "延課" || value === "假期";
