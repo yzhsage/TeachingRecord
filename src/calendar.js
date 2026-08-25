@@ -16,14 +16,20 @@ export function isDateString(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 }
 
+function dateSerial(date) {
+  if (!isDateString(date)) return NaN;
+  const [year, month, day] = date.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
 function inclusiveDates(start, end) {
   if (!isDateString(start) || !isDateString(end) || end < start) return [];
   const dates = [];
-  const cursor = new Date(`${start}T00:00:00`);
-  const last = new Date(`${end}T00:00:00`);
-  while (cursor <= last && dates.length < 366) {
+  const cursor = new Date(dateSerial(start));
+  const last = dateSerial(end);
+  while (cursor.getTime() <= last && dates.length < 366) {
     dates.push(cursor.toISOString().slice(0, 10));
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   return dates;
 }
@@ -38,7 +44,7 @@ export function eventDates(event) {
 
 export function isContinuousEvent(event) {
   const dates = eventDates(event);
-  return dates.length > 1 && dates.every((date, index) => index === 0 || (new Date(`${date}T00:00:00`) - new Date(`${dates[index - 1]}T00:00:00`)) === 86400000);
+  return dates.length > 1 && dates.every((date, index) => index === 0 || (dateSerial(date) - dateSerial(dates[index - 1])) === 86400000);
 }
 
 export function isEventOnDate(event, date) {

@@ -40,3 +40,10 @@ test("normalizeEvent preserves unique multiple schools", () => {
   assert.deepEqual(event.schools, ["甲高中", "乙高中"]);
   assert.equal(event.school, "甲高中");
 });
+
+test("date-only events keep their calendar date in Taiwan time", () => {
+  const event = normalizeEvent({ id: "holiday", date: "2026-09-03", endDate: "2026-09-03", title: "軍人節", type: "nationalHoliday" });
+  assert.deepEqual(eventDates(event), ["2026-09-03"]);
+  assert.equal(eventsOnDate([event], "2026-09-03").length, 1);
+  assert.equal(eventsOnDate([event], "2026-09-02").length, 0);
+});

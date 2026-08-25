@@ -2501,13 +2501,13 @@ const CSS = `
 .calendar-event-schools { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-soft); font-size: 11px; }
 .calendar-event-form { margin-top: 10px; }
   .calendar-event-note-field { grid-column: 1 / -1; }
-  .calendar-schools-field { min-width: 0; }
+  .calendar-schools-field { min-width: 0; grid-column: 1 / -1; }
   .school-multi-picker { position: relative; }
-  .school-multi-picker summary { list-style: none; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); color: var(--ink); font-size: 13px; cursor: pointer; }
+  .school-multi-picker summary { list-style: none; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--card); color: var(--ink); font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .school-multi-picker summary::-webkit-details-marker { display: none; }
   .school-multi-picker[open] summary { border-color: var(--brass); }
-  .school-multi-options { position: absolute; z-index: 3; left: 0; right: 0; display: flex; flex-direction: column; gap: 7px; max-height: 190px; overflow: auto; margin-top: 4px; padding: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 20px rgba(33,38,43,0.12); }
-  .school-multi-options label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+  .school-multi-options { position: absolute; z-index: 3; left: 0; right: 0; display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow: auto; margin-top: 4px; padding: 7px 9px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 20px rgba(33,38,43,0.12); }
+  .school-multi-options label { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 27px; padding: 2px; font-size: 12px; white-space: nowrap; }
   .school-multi-options input { accent-color: var(--brass); }
   .calendar-date-picker-row { display: flex; align-items: center; gap: 6px; }
   .calendar-date-picker-row input { min-width: 0; flex: 1; }
