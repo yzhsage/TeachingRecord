@@ -73,7 +73,7 @@ GitHub Actions 會每月執行同步；只有資料實際變更時才會提交�
 
 ## 本機開發
 
-需要 Node.js 20 以上。第一次建立依賴時使用鎖定檔安裝：
+本機需要 Node.js 20 以上；GitHub Actions 發布流程使用 Node.js 24，以符合 GitHub Actions 的目前執行環境。第一次建立依賴時使用鎖定檔安裝：
 
 ```bash
 npm ci
@@ -101,7 +101,9 @@ npm run build
 
 ## GitHub Pages 部署
 
-部署流程只會在 `main` 分支收到 push，或從 GitHub Actions 手動執行時啟動。流程會使用 `npm ci` 安裝鎖定版本、執行 `npm run build`，再透過 GitHub Pages Actions 發布 `dist/`。
+部署流程只會在 `main` 分支收到 push，或從 GitHub Actions 手動執行時啟動。流程會使用 Node.js 24、`npm ci` 安裝鎖定版本、執行 `npm test` 與 `npm run build`，再透過 GitHub Pages Actions 發布 `dist/`。建置與發布 job 分開，發布 job 明確使用 `pages: write` 與 `id-token: write`。
+
+目前 workflow 使用 `actions/checkout@v7`、`actions/configure-pages@v5`、`actions/setup-node@v7`、`actions/upload-pages-artifact@v4` 與 `actions/deploy-pages@v5`。這些版本是為了配合 GitHub Actions runner 的 Node.js 24 執行環境；不要用 `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true` 退回 Node.js 20。
 
 第一次設定時，請在 GitHub repository 的 Settings → Pages 將 Source 設為 **GitHub Actions**。成功發布後網址為：
 
