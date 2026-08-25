@@ -1,63 +1,122 @@
-# 教學紀錄系統 — 部署說明
+# 教學紀錄系統
 
-## 這個專案的架構
-- 前端：React + Vite,程式碼在 `src/App.jsx`(你原本 Claude artifact 的邏輯,幾乎沒動,只換了資料存取層)
-- 資料庫：Firebase Realtime Database,取代原本的 `window.storage`
-- 登入：`src/AuthGate.jsx`,輸入密碼 → 背後用 Firebase Authentication(Email/Password)驗證
-- 部署：GitHub Actions 自動 build 並發布到 GitHub Pages
+這是一個供**單一教師帳號使用**的教學紀錄工具，部署於 GitHub Pages，資料保存於 Firebase Realtime Database。系統包含班級與學生管理、課表、點名、成績、收費、備份，以及整合國定假日、校內活動與大考日期的行事曆。
 
-## 上線前,你需要做三件事
+## 目前功能
 
-### 1. 改 `src/AuthGate.jsx` 裡的 email
-打開這個檔案,把這一行:
-```js
-const TEACHER_EMAIL = "teacher@shark.app";
-```
-換成你在 Firebase Authentication → Users 裡實際新增的那組 email(要一字不差)。密碼不用寫在程式碼裡,是你登入畫面自己輸入的那組密碼。
+| 區域 | 功能說明 |
+|---|---|
+| 班級 | 新增、編輯與封存班級，管理學生、學校、課表規則與單次補課 |
+| 點名 | 依上課日期記錄出席、請假、曠課、遲到、早退、延課與假期，並保留備註 |
+| 成績 | 管理平時考與段考欄位，支援分數輸入與班級總覽 |
+| 收費 | 記錄應收、已收與收款日期 |
+| 行事曆 | 顯示國定假日、學測／分科測驗／會考與自訂事件；自訂事件支援不連續日期、連續日期區間、適用學校複選、編輯與刪除 |
+| 備份 | 匯出與匯入 JSON；備份包含班級索引、教學資料與手動行事曆事件 |
 
-### 2. 設定 Firebase 安全規則
-到 Firebase Console → Realtime Database → 規則(Rules)分頁,把內容整個換成 `firebase.rules.json` 裡的內容,然後按「發布」。目前規則只允許 `AuthGate.jsx` 使用的單一 email 存取資料；若該 email 變更，Rules 與 `AuthGate.jsx` 必須同步修改。較嚴格的做法是改用該帳號的 Firebase UID。
+上方導覽的「行事曆」會開啟月曆。國定假日以不同底色標示；選定日期沒有節日或事件時，下方事件窗格會隱藏。事件清單會顯示事件名稱、適用學校與多日數量。
 
-### 3. 推上 GitHub 並開啟 Pages
-在專案資料夾內(也就是這些檔案所在的地方)依序執行:
+## 專案結構
+
+| 路徑 | 用途 |
+|---|---|
+| `src/App.jsx` | 主要畫面、班級流程、行事曆與資料操作 |
+| `src/AuthGate.jsx` | Firebase Email／Password 登入閘門；目前只接受單一教師帳號 |
+| `src/firebase.js` | Firebase 初始化設定 |
+| `src/calendar.js` | 行事曆事件正規化、日期判斷與連續性判斷 |
+| `public/calendar/national-holidays.json` | 由政府辦公日曆資料產生的國定假日資料 |
+| `public/calendar/major-exams.json` | 經官方公告確認的大考日期資料 |
+| `scripts/sync-holidays.mjs` | 下載並轉換官方國定假日資料 |
+| `scripts/calendar.test.mjs` | 行事曆日期、事件與多選學校資料測試 |
+| `.github/workflows/deploy.yml` | GitHub Pages 建置與發布 |
+| `.github/workflows/sync-holidays.yml` | 定期同步官方國定假日資料 |
+| `firebase.rules.json` | 單人模式 Firebase Realtime Database 安全規則 |
+
+## Firebase 登入與安全規則
+
+`src/AuthGate.jsx` 中的 `TEACHER_EMAIL` 必須與 Firebase Authentication → Users 裡的登入帳號完全一致。密碼只在登入畫面輸入，**不要寫入程式碼或提交至 Git**。
+
+`firebase.rules.json` 目前以登入帳號 email 限制整個 `records` 節點的讀寫權限，其他路徑預設拒絕。若日後更換登入帳號，必須同步修改 `src/AuthGate.jsx` 與 `firebase.rules.json`，再到 Firebase Console 的 Realtime Database → Rules 發布新規則。更嚴格的長期做法是改用固定 Firebase UID。
+
+## 資料保存位置
+
+所有應用資料位於 Firebase Realtime Database 的 `records/` 節點：
+
+| 路徑 | 內容 |
+|---|---|
+| `records/classIndex` | 班級、學生與課表設定 |
+| `records/attendance/<班級 id>` | 點名資料 |
+| `records/quiz/<班級 id>`、`records/exam/<班級 id>` | 平時考與段考資料 |
+| `records/fee/<班級 id>` | 收費資料 |
+| `records/calendar/events` | 手動建立的行事曆事件 |
+| `records/lastBackupAt` | 最近一次成功同步的備份時間 |
+
+官方國定假日與大考資料是隨網站發布的靜態檔案，不會寫入 Firebase。手動行事曆事件則會寫入 `records/calendar/events`，也會包含在 JSON 備份中。
+
+## 行事曆資料維護
+
+國定假日資料由政府行政機關辦公日曆資料轉換而來。可以在專案根目錄執行下列指令重新產生資料：
+
 ```bash
-git init
-git add .
-git commit -m "初始版本"
-git branch -M main
-git remote add origin https://github.com/yzhsage/TeachingRecord.git
-git push -u origin main
+npm run sync:holidays
 ```
-接著到 GitHub 上的 repo → Settings → Pages,把「Source」設定成 **GitHub Actions**(不是 Deploy from a branch)。push 完之後,repo 的 Actions 分頁會自動開始跑部署流程,跑完後網址會是:
 
+GitHub Actions 會每月執行同步；只有資料實際變更時才會提交，之後由部署流程發布新資料。同步腳本產生的 `public/calendar/national-holidays.json` 不應手動修改。
+
+學測、分科測驗與國中教育會考不是固定規則，而是依年度官方簡章或公告確認。因此，年度資料請人工核對後更新 `public/calendar/major-exams.json`，並保留官方來源網址。校內段考與校外教學沒有單一全國資料源，請在行事曆的「新增事件」中建立；適用學校可以複選，未選學校代表適用全部學校。
+
+| 資料 | 維護方式 | 來源或核對方式 |
+|---|---|---|
+| 國定假日 | 腳本與 GitHub Actions 自動同步 | 政府資料開放平臺的政府行政機關辦公日曆表 [1] |
+| 學測、分科測驗 | 更新 `public/calendar/major-exams.json` | 大學入學考試中心年度簡章與公告 [2] |
+| 國中教育會考 | 更新 `public/calendar/major-exams.json` | 國中教育會考官方公告 [3] |
+| 校內段考、校外教學 | 在 App 中手動建立或編輯 | 以各校公告為準 |
+
+## 本機開發
+
+需要 Node.js 20 以上。第一次建立依賴時使用鎖定檔安裝：
+
+```bash
+npm ci
+npm run dev
 ```
+
+Vite 開發伺服器啟動後，請開啟：
+
+```text
+http://localhost:5173/TeachingRecord/
+```
+
+由於本專案的 `base` 是 GitHub Pages 的 `/TeachingRecord/`，本機測試時也要保留這個路徑。
+
+## 測試與建置
+
+提交前至少執行以下指令：
+
+```bash
+npm test
+npm run build
+```
+
+`npm test` 會驗證日期區間、不連續日期、事件正規化、多選學校與台灣時區日期；`npm run build` 會產生 `dist/`。`dist/` 與 `node_modules/` 不應提交至 Git。
+
+## GitHub Pages 部署
+
+部署流程只會在 `main` 分支收到 push，或從 GitHub Actions 手動執行時啟動。流程會使用 `npm ci` 安裝鎖定版本、執行 `npm run build`，再透過 GitHub Pages Actions 發布 `dist/`。
+
+第一次設定時，請在 GitHub repository 的 Settings → Pages 將 Source 設為 **GitHub Actions**。成功發布後網址為：
+
+```text
 https://yzhsage.github.io/TeachingRecord/
 ```
 
-之後每次你請我改程式碼、把新版檔案 push 上去,GitHub 會自動重新建置部署,不用手動操作。
+若要發布本機修改，請先確認 `npm test` 與 `npm run build` 通過，再提交並推送至 `main`。Firebase Rules 不會由 GitHub Pages 自動發布，Rules 修改後仍須到 Firebase Console 手動發布。
 
-## 本機測試(可選)
-如果想在推上線前先在自己電腦上看看畫面對不對:
-```bash
-npm install
-npm run dev
-```
-會啟動一個本機網址(通常是 http://localhost:5173),但因為 base path 設定是給 GitHub Pages 用的 `/TeachingRecord/`,本機測試時瀏覽器要打開 `http://localhost:5173/TeachingRecord/` 才看得到畫面。
+## 備份建議
 
-## 資料存放位置
-所有資料都存在 Firebase Realtime Database 底下的 `records/` 這個節點,結構跟原本的 storage key 對應:
-- `records/classIndex` — 班級、學生、課表設定
-- `records/attendance/<班級id>` — 點名紀錄
-- `records/quiz/<班級id>`、`records/exam/<班級id>` — 平時考、段考成績
-- `records/fee/<班級id>` — 收費紀錄
-- `records/calendar/events` — 手動建立的行事曆事件（官方事件隨網站資料檔更新）
+系統提供 JSON 匯出／匯入，但它是額外備份手段，不取代 Firebase 本身的資料保留策略。建議在大量修改班級、成績或收費資料前先按「備份」，並將下載的 JSON 保存於專案目錄以外的位置；下載的備份檔案不要提交至 Git。
 
-原本 artifact 裡「JSON 匯出/匯入」的功能沒有改動,可以繼續當作額外備份手段；新版備份也會包含手動建立的行事曆事件。
+## 參考來源
 
-## 日期頁面行事曆
-
-日期頁面的月曆會顯示官方日期與自訂事件。國定假日資料由政府資料開放平臺提供的政府行政機關辦公日曆表轉換而來；`npm run sync:holidays` 可重新下載並產生 `public/calendar/national-holidays.json`。GitHub Actions 會定期執行同步，資料有變更時提交並觸發重新部署。
-
-學測、分科測驗與國中教育會考目前以官方年度公告／簡章確認後收錄於 `public/calendar/major-exams.json`。校內段考與校外教學沒有單一全國資料源，請在日期頁面按「新增事件」手動建立；可設定事件名稱、類型、不連續日期、適用學校（可複選）與備註，已建立的手動事件也可以編輯或刪除。選定日期沒有節日或事件時，下方事件窗格會隱藏。
-
-官方行政機關辦公日曆不一定等同個別學校的校務日曆，因此校內補課、段考、校外教學與臨時停課仍應以學校公告為準。
+[1]: https://data.gov.tw/dataset/123662 "政府資料開放平臺：政府行政機關辦公日曆表"
+[2]: https://www.ceec.edu.tw/ "大學入學考試中心"
+[3]: https://www.k12ea.gov.tw/ "國中教育會考官方網站"
