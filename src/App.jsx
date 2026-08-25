@@ -8,9 +8,10 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
 import _ from "lodash";
-import { ref, get, set as dbSet } from "firebase/database";
+import { ref, get, set as dbSet, update as dbUpdate } from "firebase/database";
 import { signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
+import { eventTypeMeta, eventsOnDate, normalizeEvent } from "./calendar";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -328,7 +329,39 @@ async function loadKey(key, fallback) {
     return fallback;
   }
 }
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonNegativeNumber(value) {
+  if (value === undefined || value === null || value === "") return true;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0;
+}
+
+function validateStoreValue(key, value) {
+  if (key === "classIndex") {
+    return Array.isArray(value) && value.every((cls) => isRecord(cls) && typeof cls.id === "string" && Array.isArray(cls.students || []) && Array.isArray(cls.scheduleRules || []) && Array.isArray(cls.overrides || []));
+  }
+  if (key === "calendar:events") {
+    return Array.isArray(value) && value.every((event) => normalizeEvent(event) && typeof event.id === "string" && event.id.length > 0);
+  }
+  if (key === "lastBackupAt") return value === null || (typeof value === "string" && !Number.isNaN(new Date(value).getTime()));
+  if (key.startsWith("attendance:")) return isRecord(value) && Object.values(value).every((day) => isRecord(day) && isRecord(day.records || {}));
+  if (key.startsWith("quiz:") || key.startsWith("exam:")) {
+    return isRecord(value) && Array.isArray(value.columns) && isRecord(value.scores) && value.columns.every((col) => isRecord(col) && typeof col.id === "string" && typeof col.name === "string") && Object.values(value.scores).every((colScores) => isRecord(colScores) && Object.values(colScores).every((cell) => isRecord(cell) && isNonNegativeNumber(cell.score)));
+  }
+  if (key.startsWith("fee:")) {
+    return isRecord(value) && Array.isArray(value.charges) && value.charges.every((charge) => isRecord(charge) && typeof charge.id === "string" && typeof charge.studentId === "string" && isNonNegativeNumber(charge.tuition) && isNonNegativeNumber(charge.materials) && isNonNegativeNumber(charge.discount) && (!charge.periodStart || !charge.periodEnd || charge.periodEnd >= charge.periodStart));
+  }
+  return true;
+}
+
 async function saveKey(key, value) {
+  if (!validateStoreValue(key, value)) {
+    console.error("store validation failed", key);
+    return false;
+  }
   memoryCache.set(key, value);
   try {
     // Firebase's set() throws on `undefined` properties (unlike
@@ -391,9 +424,11 @@ function useCachedStore(key, fallback) {
    re-saving or clobbering data. */
 function useDebouncedSave(value, key, ready, delay = 700) {
   const [status, setStatus] = useState("idle");
+  const [retryToken, setRetryToken] = useState(0);
   const timer = useRef(null);
   const lastSaved = useRef(null);
   const initialized = useRef(false);
+  const saveAttempt = useRef(0);
   const latestValue = useRef(value);
   const latestKey = useRef(key);
   latestValue.current = value;
@@ -406,21 +441,27 @@ function useDebouncedSave(value, key, ready, delay = 700) {
       lastSaved.current = value;
       return;
     }
-    if (_.isEqual(value, lastSaved.current)) return;
+    if (_.isEqual(value, lastSaved.current) && retryToken === 0) return;
     setStatus("saving");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
-      await saveKey(key, value);
-      lastSaved.current = value;
+      const attempt = ++saveAttempt.current;
+      const ok = await saveKey(key, value);
       timer.current = null;
-      setStatus("saved");
+      if (attempt !== saveAttempt.current) return;
+      if (ok) {
+        lastSaved.current = value;
+        setStatus("saved");
+      } else {
+        setStatus("error");
+      }
     }, delay);
     // Only clears the pending timer so a fresh one can be scheduled on
     // the next change — does NOT run on real unmount discarding data,
     // that's handled by the separate effect below.
     return () => { if (timer.current) clearTimeout(timer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, ready]);
+  }, [value, ready, retryToken]);
 
   // Flush any still-pending save the moment this component actually
   // unmounts (e.g. switching tabs right after an edit) so a quick edit
@@ -434,15 +475,18 @@ function useDebouncedSave(value, key, ready, delay = 700) {
     };
   }, []);
 
-  return status;
+  return { status, retry: () => setRetryToken((n) => n + 1) };
 }
 
 /* ------------------------------------------------------------------ */
 /* Small shared UI bits                                                 */
 /* ------------------------------------------------------------------ */
 
-function SaveIndicator({ status }) {
-  if (status === "idle") return null;
+function SaveIndicator({ status, onRetry }) {
+  if (!status || status === "idle") return null;
+  if (status === "error") {
+    return <button type="button" className="save-indicator save-indicator-error" onClick={onRetry}>儲存失敗，點此重試</button>;
+  }
   return <span className="save-indicator">{status === "saving" ? "儲存中…" : "✓ 已儲存"}</span>;
 }
 function IconBtn({ onClick, children, title, danger, disabled }) {
@@ -510,6 +554,9 @@ export default function App() {
   const [exporting, setExporting] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState(undefined); // undefined = still loading
   const fileInputRef = useRef(null);
+  const [calendarEvents, setCalendarEvents, calendarReady] = useCachedStore("calendar:events", []);
+  const [officialEvents, setOfficialEvents] = useState([]);
+  const [officialCalendarStatus, setOfficialCalendarStatus] = useState("loading");
 
   // Every write to `classes` goes through this so duplicate ids can never
   // accumulate, no matter what caused them.
@@ -528,7 +575,7 @@ export default function App() {
     })();
   }, []);
 
-  const classIdxStatus = useDebouncedSave(classes, "classIndex", ready);
+  const classIdxSave = useDebouncedSave(classes, "classIndex", ready);
 
   function updateClass(id, updater) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater({ ...c }) : c)));
@@ -554,6 +601,46 @@ export default function App() {
     })();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setOfficialCalendarStatus("loading");
+      try {
+        const base = import.meta.env.BASE_URL || "/";
+        const [holidayRes, examRes] = await Promise.all([
+          fetch(`${base}calendar/national-holidays.json`),
+          fetch(`${base}calendar/major-exams.json`),
+        ]);
+        if (!holidayRes.ok || !examRes.ok) throw new Error("calendar asset unavailable");
+        const [holidayBundle, examBundle] = await Promise.all([holidayRes.json(), examRes.json()]);
+        const bundled = [...(holidayBundle.events || []), ...(examBundle.events || [])]
+          .map(normalizeEvent)
+          .filter(Boolean);
+        if (!cancelled) {
+          setOfficialEvents(bundled);
+          setOfficialCalendarStatus("ready");
+        }
+      } catch (e) {
+        console.error("calendar asset load failed", e);
+        if (!cancelled) setOfficialCalendarStatus("error");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  function addCalendarEvent(event) {
+    const normalized = normalizeEvent({ ...event, id: genId(), readOnly: false, source: "手動建立" });
+    if (!normalized) return false;
+    setCalendarEvents((prev) => [...prev, normalized]);
+    return true;
+  }
+
+  function removeCalendarEvent(id) {
+    setCalendarEvents((prev) => prev.filter((event) => event.id !== id));
+  }
+
+  const calendarSave = useDebouncedSave(calendarEvents, "calendar:events", calendarReady);
+  const allCalendarEvents = [...officialEvents, ...(calendarEvents || [])];
   const daysSinceBackup = lastBackupAt ? Math.floor((Date.now() - new Date(lastBackupAt).getTime()) / 86400000) : null;
   const backupOverdue = lastBackupAt !== undefined && (lastBackupAt === null || daysSinceBackup >= 7);
 
@@ -569,7 +656,13 @@ export default function App() {
           fee: c.hasFee ? await loadKey(`fee:${c.id}`, { charges: [] }) : null,
         };
       }
-      const bundle = { exportedAt: new Date().toISOString(), classIndex: classes, records };
+      const bundle = {
+        schemaVersion: 2,
+        exportedAt: new Date().toISOString(),
+        classIndex: classes,
+        calendarEvents: calendarEvents || [],
+        records,
+      };
       const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -580,9 +673,13 @@ export default function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       const nowIso = new Date().toISOString();
-      await saveKey("lastBackupAt", nowIso);
-      setLastBackupAt(nowIso);
-      setToast("備份檔案已下載。");
+      const backupMarked = await saveKey("lastBackupAt", nowIso);
+      if (backupMarked) {
+        setLastBackupAt(nowIso);
+        setToast("備份檔案已下載。");
+      } else {
+        setToast("備份檔案已下載，但備份時間未能同步到雲端；請稍後重試。");
+      }
     } catch (e) {
       setToast("匯出失敗，請再試一次。");
     }
@@ -596,16 +693,39 @@ export default function App() {
         setToast("備份內容格式不正確。");
         return;
       }
-      for (const c of bundle.classIndex) {
+      if (bundle.schemaVersion && bundle.schemaVersion > 2) {
+        setToast("備份版本較新，請先更新系統再匯入。");
+        return false;
+      }
+      const importedEvents = Array.isArray(bundle.calendarEvents)
+        ? bundle.calendarEvents.map(normalizeEvent).filter(Boolean).filter((event) => !event.readOnly)
+        : null;
+      const updates = {};
+      const cacheEntries = [];
+      const importedClasses = dedupeById(bundle.classIndex);
+      updates[keyToPath("classIndex")] = JSON.parse(JSON.stringify(importedClasses));
+      cacheEntries.push(["classIndex", importedClasses]);
+      for (const c of importedClasses) {
         const rec = bundle.records[c.id];
         if (!rec) continue;
-        if (rec.attendance) await saveKey(`attendance:${c.id}`, rec.attendance);
-        if (rec.quiz) await saveKey(`quiz:${c.id}`, rec.quiz);
-        if (rec.exam) await saveKey(`exam:${c.id}`, rec.exam);
-        if (rec.fee) await saveKey(`fee:${c.id}`, rec.fee);
+        for (const [name, value] of Object.entries({ attendance: rec.attendance, quiz: rec.quiz, exam: rec.exam, fee: rec.fee })) {
+          if (value === undefined || value === null) continue;
+          const key = `${name}:${c.id}`;
+          updates[keyToPath(key)] = JSON.parse(JSON.stringify(value));
+          cacheEntries.push([key, value]);
+        }
       }
-      importClasses(bundle.classIndex);
-      setToast(`已從備份還原 ${bundle.classIndex.length} 個班級的資料。`);
+      if (importedEvents) {
+        updates[keyToPath("calendar:events")] = JSON.parse(JSON.stringify(importedEvents));
+        cacheEntries.push(["calendar:events", importedEvents]);
+      }
+      if (Object.keys(updates).length > 0) {
+        await dbUpdate(ref(db), updates);
+        cacheEntries.forEach(([key, value]) => memoryCache.set(key, value));
+      }
+      if (importedEvents) setCalendarEvents(importedEvents);
+      importClasses(importedClasses);
+      setToast(`已從備份還原 ${importedClasses.length} 個班級${importedEvents ? `與 ${importedEvents.length} 個行事曆事件` : ""}。`);
       return true;
     } catch (e) {
       setToast("讀取備份內容失敗，請確認格式沒有被截斷或修改過。");
@@ -654,7 +774,7 @@ export default function App() {
       <TopNav
         view={view}
         setView={setView}
-        saveStatus={classIdxStatus}
+        saveStatus={classIdxSave}
         backupOverdue={backupOverdue}
         onToggleBackup={() => setBackupOpen((v) => !v)}
       />
@@ -663,7 +783,7 @@ export default function App() {
         <div className="view-pad" style={{ paddingBottom: 0 }}>
           <div className="form-card">
             <div className="form-title">資料備份</div>
-            <div className="section-hint" style={{ marginBottom: 10 }}>建議定期匯出備份檔存到自己的裝置，避免資料遺失。匯入備份會用檔案內容覆蓋同 ID 的班級，其他班級不受影響。</div>
+            <div className="section-hint" style={{ marginBottom: 10 }}>建議定期匯出備份檔存到自己的裝置，避免資料遺失。備份也會包含手動建立的行事曆事件；匯入備份會用檔案內容覆蓋同 ID 的班級，其他班級不受影響。</div>
             <div className="row-actions">
               <button className="btn-primary btn-sm" disabled={exporting} onClick={handleExport}>{exporting ? "匯出中…" : "匯出全部資料"}</button>
               <button className="btn-ghost btn-sm" onClick={() => fileInputRef.current && fileInputRef.current.click()}>選擇備份檔案</button>
@@ -685,7 +805,17 @@ export default function App() {
         </div>
       )}
       {view === "today" && (
-        <TodayView classes={classes.filter((c) => !c.archived)} onOpenClass={openClass} />
+        <TodayView
+          classes={classes.filter((c) => !c.archived)}
+          onOpenClass={openClass}
+          calendarEvents={allCalendarEvents}
+          onAddCalendarEvent={addCalendarEvent}
+          onDeleteCalendarEvent={removeCalendarEvent}
+          calendarReady={calendarReady}
+          officialCalendarStatus={officialCalendarStatus}
+          calendarSaveState={calendarSave}
+          knownSchools={knownSchools}
+        />
       )}
       {view === "classes" && (
         <ClassesView
@@ -738,7 +868,7 @@ function TopNav({ view, setView, saveStatus, backupOverdue, onToggleBackup }) {
         <button className={"pill" + (view !== "today" ? " pill-active" : "")} onClick={() => setView("classes")}>所有班級</button>
       </div>
       <div className="topnav-actions">
-        <SaveIndicator status={saveStatus} />
+        <SaveIndicator status={saveStatus.status} onRetry={saveStatus.retry} />
         <button className={"pill" + (backupOverdue ? " pill-warning" : "")} onClick={onToggleBackup} title="資料備份">備份{backupOverdue ? " ⚠" : ""}</button>
         <button className="pill logout-pill" onClick={() => signOut(auth)} title="登出">登出</button>
       </div>
@@ -750,7 +880,7 @@ function TopNav({ view, setView, saveStatus, backupOverdue, onToggleBackup }) {
 /* Today (date/calendar) view                                          */
 /* ------------------------------------------------------------------ */
 
-function MonthCalendar({ selected, onSelect, classes, hasSession }) {
+function MonthCalendar({ selected, onSelect, classes, hasSession, calendarEvents }) {
   const selDate = fromDateStr(selected);
   const [viewYear, setViewYear] = useState(selDate.getFullYear());
   const [viewMonth, setViewMonth] = useState(selDate.getMonth());
@@ -789,6 +919,7 @@ function MonthCalendar({ selected, onSelect, classes, hasSession }) {
           const ds = toDateStr(d);
           const inMonth = d.getMonth() === viewMonth;
           const dayClasses = classes.filter((c) => hasSession(c, ds));
+          const dayEvents = eventsOnDate(calendarEvents, ds);
           const isToday = ds === today;
           const isSelected = ds === selected;
           return (
@@ -796,10 +927,13 @@ function MonthCalendar({ selected, onSelect, classes, hasSession }) {
               key={i}
               className={"calendar-cell" + (inMonth ? "" : " calendar-cell-out") + (isSelected ? " calendar-cell-selected" : "") + (isToday ? " calendar-cell-today" : "")}
               onClick={() => onSelect(ds)}
+              title={dayEvents.length ? dayEvents.map((event) => event.title).join("、") : formatDisplay(ds)}
+              aria-label={`${formatDisplay(ds)}${dayEvents.length ? `：${dayEvents.map((event) => event.title).join("、")}` : ""}`}
             >
               <span className="calendar-cell-num">{d.getDate()}</span>
               <span className="calendar-cell-dots">
                 {dayClasses.slice(0, 4).map((c) => <span key={c.id} className="dot" style={{ background: colorForClass(c.id) }} />)}
+                {dayEvents.slice(0, 3).map((event) => <span key={event.id} className="event-dot" style={{ background: eventTypeMeta(event.type).color }} />)}
               </span>
             </button>
           );
@@ -809,7 +943,86 @@ function MonthCalendar({ selected, onSelect, classes, hasSession }) {
   );
 }
 
-function TodayView({ classes, onOpenClass }) {
+function CalendarEventsPanel({ date, events, onAdd, onDelete, calendarReady, officialCalendarStatus, calendarSaveState, knownSchools }) {
+  const [adding, setAdding] = useState(false);
+  const dayEvents = eventsOnDate(events, date);
+
+  return (
+    <div className="calendar-events-panel">
+      <div className="row-between">
+        <div>
+          <div className="section-label calendar-events-title">行事曆</div>
+          <div className="section-hint">國定假日、大考由資料檔提供；學校段考與校外教學可自行新增。</div>
+          <SaveIndicator status={calendarSaveState.status} onRetry={calendarSaveState.retry} />
+        </div>
+        <button type="button" className="btn-primary btn-sm" onClick={() => setAdding((value) => !value)}>{adding ? "取消新增" : "新增事件"}</button>
+      </div>
+
+      {adding && <CalendarEventForm date={date} knownSchools={knownSchools} onCancel={() => setAdding(false)} onCreate={(event) => { onAdd(event); setAdding(false); }} />}
+
+      {dayEvents.length === 0 ? (
+        <div className="empty-note">{date} 尚無行事曆事件。</div>
+      ) : (
+        <div className="calendar-event-list">
+          {dayEvents.map((event) => {
+            const meta = eventTypeMeta(event.type);
+            return (
+              <div className="calendar-event-row" key={event.id}>
+                <span className="event-dot event-dot-large" style={{ background: meta.color }} />
+                <div className="calendar-event-body">
+                  <div className="calendar-event-name">{event.title}</div>
+                  <div className="calendar-event-meta">{meta.label}{event.school ? ` · ${event.school}` : ""} · {event.date}{event.endDate && event.endDate !== event.date ? ` ～ ${event.endDate}` : ""}</div>
+                  {event.note && <div className="calendar-event-note">{event.note}</div>}
+                  {event.source && <div className="calendar-event-source">來源：{event.source}{event.sourceUrl && <> · <a href={event.sourceUrl} target="_blank" rel="noreferrer">官方來源</a></>}</div>}
+                </div>
+                {!event.readOnly && <ConfirmDelete label="刪除這個事件？" onConfirm={() => onDelete(event.id)} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="calendar-source-note">
+        {officialCalendarStatus === "loading" ? "正在載入官方日期資料…" : officialCalendarStatus === "error" ? "官方日期資料目前無法載入；手動事件仍可使用。" : "官方日期資料由儲存庫中的年度檔案提供，更新後會隨新版部署。"}
+        {!calendarReady && " 行事曆自訂資料正在載入…"}
+      </div>
+    </div>
+  );
+}
+
+function CalendarEventForm({ date, knownSchools, onCancel, onCreate }) {
+  const [startDate, setStartDate] = useState(date);
+  const [endDate, setEndDate] = useState(date);
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("schoolExam");
+  const [school, setSchool] = useState("");
+  const [note, setNote] = useState("");
+
+  function submit() {
+    const cleanTitle = title.trim();
+    if (!cleanTitle || !startDate || !endDate || endDate < startDate) return;
+    onCreate({ date: startDate, endDate, title: cleanTitle, type, school, note, source: "手動建立" });
+  }
+
+  return (
+    <div className="form-card calendar-event-form">
+      <div className="form-grid">
+        <label className="field"><span>事件名稱</span><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例：第一次段考" autoFocus /></label>
+        <label className="field"><span>類型</span><select value={type} onChange={(e) => setType(e.target.value)}>{["schoolExam", "fieldTrip", "majorExam", "other"].map((value) => <option value={value} key={value}>{eventTypeMeta(value).label}</option>)}</select></label>
+        <label className="field"><span>開始日期</span><input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); }} /></label>
+        <label className="field"><span>結束日期</span><input type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
+        <label className="field"><span>適用學校（選填）</span><input list="calendar-school-options" value={school} onChange={(e) => setSchool(e.target.value)} placeholder="例：○○高中" /><datalist id="calendar-school-options">{(knownSchools || []).map((name) => <option key={name} value={name} />)}</datalist></label>
+        <label className="field calendar-event-note-field"><span>備註（選填）</span><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例：以學校公告為準" /></label>
+      </div>
+      <div className="form-actions">
+        <button type="button" className="btn-ghost" onClick={onCancel}>取消</button>
+        <button type="button" className="btn-primary" disabled={!title.trim() || !startDate || !endDate || endDate < startDate} onClick={submit}>儲存事件</button>
+      </div>
+    </div>
+  );
+}
+
+function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, onDeleteCalendarEvent, calendarReady, officialCalendarStatus }) {
   const [selected, setSelected] = useState(todayStr());
   const [attendanceMap, setAttendanceMap] = useState({});
   const classIdsKey = classes.map((c) => c.id).join(",");
@@ -839,7 +1052,16 @@ function TodayView({ classes, onOpenClass }) {
 
   return (
     <div className="view-pad">
-      <MonthCalendar selected={selected} onSelect={setSelected} classes={classes} hasSession={hasSession} />
+      <MonthCalendar selected={selected} onSelect={setSelected} classes={classes} hasSession={hasSession} calendarEvents={calendarEvents} />
+
+      <CalendarEventsPanel
+        date={selected}
+        events={calendarEvents}
+        onAdd={onAddCalendarEvent}
+        onDelete={onDeleteCalendarEvent}
+        calendarReady={calendarReady}
+        officialCalendarStatus={officialCalendarStatus}
+      />
 
       <div className="section-label">{formatDisplay(selected)} 上課班級</div>
       {matches.length === 0 && <div className="empty-note">這天沒有排定的課。</div>}
@@ -1074,7 +1296,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
   const storageKeyName = `attendance:${cls.id}`;
   const [data, setData, ready] = useCachedStore(storageKeyName, {});
 
-  const status = useDebouncedSave(data, storageKeyName, ready);
+  const saveState = useDebouncedSave(data, storageKeyName, ready);
 
   const dayData = { note: "", content: "", records: {}, ...(data[date] || {}) };
   const session = getSessionInfo(cls, date);
@@ -1161,7 +1383,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
           <button className={"pill pill-sm" + (viewMode === "single" ? " pill-active" : "")} onClick={() => setViewMode("single")}>單日紀錄</button>
           <button className={"pill pill-sm" + (viewMode === "overview" ? " pill-active" : "")} onClick={() => setViewMode("overview")}>總覽</button>
         </div>
-        <SaveIndicator status={status} />
+        <SaveIndicator status={saveState.status} onRetry={saveState.retry} />
       </div>
 
       {viewMode === "overview" ? (
@@ -1360,7 +1582,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
 
   const [data, setData, ready] = useCachedStore(storageKeyName, { columns: [], scores: {} });
 
-  const status = useDebouncedSave(data, storageKeyName, ready);
+  const saveState = useDebouncedSave(data, storageKeyName, ready);
 
   function addColumn() {
     if (!newName.trim()) return;
@@ -1464,7 +1686,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
           )}
         </div>
         <div className="row-actions">
-          <SaveIndicator status={status} />
+          <SaveIndicator status={saveState.status} onRetry={saveState.retry} />
           <button className="btn-primary btn-sm" onClick={() => setAdding(true)}><Plus size={16} /> 新增{unitLabel}</button>
         </div>
       </div>
@@ -1597,7 +1819,7 @@ function FeeTab({ cls }) {
   const storageKeyName = `fee:${cls.id}`;
   const [data, setData, ready] = useCachedStore(storageKeyName, { charges: [] });
 
-  const status = useDebouncedSave(data, storageKeyName, ready);
+  const saveState = useDebouncedSave(data, storageKeyName, ready);
 
   function addCharge(charge) {
     setData((prev) => ({ charges: [...prev.charges, { id: genId(), paid: false, paidDate: "", ...charge }] }));
@@ -1656,7 +1878,7 @@ function FeeTab({ cls }) {
       <div className="row-between" style={{ marginTop: 10 }}>
         <span className="section-hint">收費區間、金額、教材費、折扣，總金額自動計算</span>
         <div className="row-actions">
-          <SaveIndicator status={status} />
+          <SaveIndicator status={saveState.status} onRetry={saveState.retry} />
           <button className="btn-primary btn-sm" onClick={() => setAdding(true)}><Plus size={16} /> 新增收費</button>
         </div>
       </div>
@@ -2198,7 +2420,8 @@ const CSS = `
 .pill-warning { background: #FBEAE9; color: #8C332E; border-color: #F0C6C3; }
 
 .topnav-actions { display: flex; align-items: center; gap: 10px; }
-.save-indicator { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+  .save-indicator { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+  .save-indicator-error { border: none; background: none; color: #B23A34; cursor: pointer; font-family: inherit; padding: 0; text-decoration: underline; }
 
 .toast { position: sticky; top: 58px; z-index: 9; margin: 0 16px 0; max-width: 688px; margin-left: auto; margin-right: auto; background: var(--ink); color: white; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
 .toast button { background: none; border: none; color: white; opacity: 0.7; cursor: pointer; display: flex; }
@@ -2221,7 +2444,18 @@ const CSS = `
 .calendar-cell-dots { display: flex; gap: 2px; height: 5px; }
 .calendar-cell-selected { border-color: var(--ink); background: #F1F1EE; }
 .calendar-cell-today { box-shadow: 0 0 0 2px var(--brass-soft); border-color: var(--brass); }
-.dot { width: 5px; height: 5px; border-radius: 50%; }
+  .dot, .event-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .event-dot-large { width: 9px; height: 9px; margin-top: 4px; }
+  .calendar-events-panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 14px; }
+  .calendar-events-title { margin: 0 0 3px; }
+  .calendar-event-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+  .calendar-event-row { display: flex; align-items: flex-start; gap: 9px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .calendar-event-body { min-width: 0; flex: 1; }
+  .calendar-event-name { font-size: 13px; font-weight: 700; }
+  .calendar-event-meta, .calendar-event-note, .calendar-event-source { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+  .calendar-event-source { font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
+  .calendar-event-form { margin-top: 10px; }
+  .calendar-event-note-field { grid-column: 1 / -1; }
 
 .card-list { display: flex; flex-direction: column; gap: 8px; }
 .class-card { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; cursor: pointer; text-align: left; font-family: inherit; width: 100%; }

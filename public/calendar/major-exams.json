@@ -1,0 +1,60 @@
+{
+  "updatedAt": "2026-08-25",
+  "events": [
+    {
+      "id": "major-2026-gsat-115",
+      "date": "2026-01-17",
+      "endDate": "2026-01-19",
+      "title": "115學年度學科能力測驗",
+      "type": "majorExam",
+      "note": "日期依大考中心 115 學年度考試簡章",
+      "source": "大考中心 115 學年度考試簡章",
+      "sourceUrl": "https://www.ceec.edu.tw/files/file_pool/1/0p217324423450953093/115%E5%AD%B8%E5%B9%B4%E5%BA%A6%E7%B0%A1%E7%AB%A0.pdf",
+      "readOnly": true
+    },
+    {
+      "id": "major-2026-cap-115",
+      "date": "2026-05-16",
+      "endDate": "2026-05-17",
+      "title": "115年國中教育會考",
+      "type": "majorExam",
+      "note": "日期依教育部國民及學前教育署公告",
+      "source": "教育部國民及學前教育署",
+      "sourceUrl": "https://www.k12ea.gov.tw/Tw/News/K12eaNewsDetail?filter=9F92BBB7-0251-4CB7-BF06-82385FD996A0&id=3c3df902-a82c-44e0-9b4f-f977fb7da581",
+      "readOnly": true
+    },
+    {
+      "id": "major-2026-ast-115",
+      "date": "2026-07-11",
+      "endDate": "2026-07-12",
+      "title": "115學年度分科測驗",
+      "type": "majorExam",
+      "note": "日期依大考中心 115 學年度考試簡章",
+      "source": "大考中心 115 學年度考試簡章",
+      "sourceUrl": "https://www.ceec.edu.tw/files/file_pool/1/0p217324423450953093/115%E5%AD%B8%E5%B9%B4%E5%BA%A6%E7%B0%A1%E7%AB%A0.pdf",
+      "readOnly": true
+    },
+    {
+      "id": "major-2027-gsat-116",
+      "date": "2027-01-22",
+      "endDate": "2027-01-24",
+      "title": "116學年度學科能力測驗",
+      "type": "majorExam",
+      "note": "日期依大考中心 116 學年度考試簡章",
+      "source": "大考中心 116 學年度考試簡章",
+      "sourceUrl": "https://www.ceec.edu.tw/files/file_pool/1/0q215601929252011195/116%E5%AD%B8%E5%B9%B4%E5%BA%A6%E7%B0%A1%E7%AB%A0.pdf",
+      "readOnly": true
+    },
+    {
+      "id": "major-2027-ast-116",
+      "date": "2027-07-10",
+      "endDate": "2027-07-11",
+      "title": "116學年度分科測驗",
+      "type": "majorExam",
+      "note": "日期依大考中心 116 學年度考試簡章",
+      "source": "大考中心 116 學年度考試簡章",
+      "sourceUrl": "https://www.ceec.edu.tw/files/file_pool/1/0q215601929252011195/116%E5%AD%B8%E5%B9%B4%E5%BA%A6%E7%B0%A1%E7%AB%A0.pdf",
+      "readOnly": true
+    }
+  ]
+}

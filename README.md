@@ -16,7 +16,7 @@ const TEACHER_EMAIL = "teacher@shark.app";
 換成你在 Firebase Authentication → Users 裡實際新增的那組 email(要一字不差)。密碼不用寫在程式碼裡,是你登入畫面自己輸入的那組密碼。
 
 ### 2. 設定 Firebase 安全規則
-到 Firebase Console → Realtime Database → 規則(Rules)分頁,把內容整個換成 `firebase.rules.json` 裡的內容,然後按「發布」。這樣可以確保沒登入的人完全讀不到、寫不到任何資料。
+到 Firebase Console → Realtime Database → 規則(Rules)分頁,把內容整個換成 `firebase.rules.json` 裡的內容,然後按「發布」。目前規則只允許 `AuthGate.jsx` 使用的單一 email 存取資料；若該 email 變更，Rules 與 `AuthGate.jsx` 必須同步修改。較嚴格的做法是改用該帳號的 Firebase UID。
 
 ### 3. 推上 GitHub 並開啟 Pages
 在專案資料夾內(也就是這些檔案所在的地方)依序執行:
@@ -50,5 +50,14 @@ npm run dev
 - `records/attendance/<班級id>` — 點名紀錄
 - `records/quiz/<班級id>`、`records/exam/<班級id>` — 平時考、段考成績
 - `records/fee/<班級id>` — 收費紀錄
+- `records/calendar/events` — 手動建立的行事曆事件（官方事件隨網站資料檔更新）
 
-原本 artifact 裡「JSON 匯出/匯入」的功能沒有改動,可以繼續當作額外備份手段。
+原本 artifact 裡「JSON 匯出/匯入」的功能沒有改動,可以繼續當作額外備份手段；新版備份也會包含手動建立的行事曆事件。
+
+## 日期頁面行事曆
+
+日期頁面的月曆會顯示官方日期與自訂事件。國定假日資料由政府資料開放平臺提供的政府行政機關辦公日曆表轉換而來；`npm run sync:holidays` 可重新下載並產生 `public/calendar/national-holidays.json`。GitHub Actions 會定期執行同步，資料有變更時提交並觸發重新部署。
+
+學測、分科測驗與國中教育會考目前以官方年度公告／簡章確認後收錄於 `public/calendar/major-exams.json`。校內段考與校外教學沒有單一全國資料源，請在日期頁面按「新增事件」手動建立；可設定事件名稱、類型、開始／結束日期與備註。
+
+官方行政機關辦公日曆不一定等同個別學校的校務日曆，因此校內補課、段考、校外教學與臨時停課仍應以學校公告為準。
