@@ -1022,7 +1022,7 @@ function CalendarEventForm({ date, knownSchools, onCancel, onCreate }) {
   );
 }
 
-function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, onDeleteCalendarEvent, calendarReady, officialCalendarStatus }) {
+function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, onDeleteCalendarEvent, calendarReady, officialCalendarStatus, calendarSaveState, knownSchools }) {
   const [selected, setSelected] = useState(todayStr());
   const [attendanceMap, setAttendanceMap] = useState({});
   const classIdsKey = classes.map((c) => c.id).join(",");
@@ -1061,6 +1061,8 @@ function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, o
         onDelete={onDeleteCalendarEvent}
         calendarReady={calendarReady}
         officialCalendarStatus={officialCalendarStatus}
+        calendarSaveState={calendarSaveState}
+        knownSchools={knownSchools}
       />
 
       <div className="section-label">{formatDisplay(selected)} 上課班級</div>
