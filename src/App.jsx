@@ -635,6 +635,13 @@ export default function App() {
     return true;
   }
 
+  function updateCalendarEvent(id, event) {
+    const normalized = normalizeEvent({ ...event, id, readOnly: false, source: "手動建立" });
+    if (!normalized) return false;
+    setCalendarEvents((prev) => prev.map((item) => item.id === id ? normalized : item));
+    return true;
+  }
+
   function removeCalendarEvent(id) {
     setCalendarEvents((prev) => prev.filter((event) => event.id !== id));
   }
@@ -811,6 +818,7 @@ export default function App() {
           calendarEvents={allCalendarEvents}
           onAddCalendarEvent={addCalendarEvent}
           onDeleteCalendarEvent={removeCalendarEvent}
+          onEditCalendarEvent={updateCalendarEvent}
           calendarReady={calendarReady}
           officialCalendarStatus={officialCalendarStatus}
           calendarSaveState={calendarSave}
@@ -908,8 +916,11 @@ function MonthCalendar({ selected, onSelect, classes, hasSession, calendarEvents
   return (
     <div className="calendar">
       <div className="calendar-header">
-        <IconBtn title="上個月" onClick={() => changeMonth(-1)}><ChevronLeft size={18} /></IconBtn>
-        <div className="calendar-title">{viewYear} 年 {viewMonth + 1} 月</div>
+        <div className="calendar-title-group">
+          <IconBtn title="上個月" onClick={() => changeMonth(-1)}><ChevronLeft size={18} /></IconBtn>
+          <div className="calendar-title">{viewYear} 年 {viewMonth + 1} 月</div>
+          <IconBtn title="下個月" onClick={() => changeMonth(1)}><ChevronRight size={18} /></IconBtn>
+        </div>
         <div className="calendar-header-actions">
           <SaveIndicator status={calendarSaveState.status} onRetry={calendarSaveState.retry} />
           <button type="button" className="btn-primary btn-sm" onClick={() => setAdding((value) => !value)}>{adding ? "取消新增" : "新增事件"}</button>
@@ -957,7 +968,8 @@ function MonthCalendar({ selected, onSelect, classes, hasSession, calendarEvents
   );
 }
 
-function CalendarEventsPanel({ date, events, onDelete }) {
+function CalendarEventsPanel({ date, events, onDelete, onEdit, knownSchools }) {
+  const [editingId, setEditingId] = useState(null);
   const dayEvents = eventsOnDate(events, date);
 
   return (
@@ -973,11 +985,19 @@ function CalendarEventsPanel({ date, events, onDelete }) {
           {dayEvents.map((event) => {
             const meta = eventTypeMeta(event.type);
             const dates = eventDates(event);
+            const schools = event.schools?.length ? event.schools : (event.school ? [event.school] : []);
+            if (editingId === event.id) {
+              return <CalendarEventForm key={event.id} date={date} initialEvent={event} knownSchools={knownSchools} onCancel={() => setEditingId(null)} onCreate={(updated) => { onEdit(event.id, updated); setEditingId(null); }} />;
+            }
             return (
               <div className="calendar-event-row" key={event.id} title={dates.length > 1 ? `共 ${dates.length} 天` : event.title}>
                 <span className="event-dot event-dot-large" style={{ background: meta.color }} />
-                <span className="calendar-event-name">{event.title}</span>
+                <div className="calendar-event-body">
+                  <span className="calendar-event-name">{event.title}</span>
+                  {schools.length > 0 && <span className="calendar-event-schools">{schools.join("、")}</span>}
+                </div>
                 {dates.length > 1 && <span className="calendar-event-duration">{dates.length}日</span>}
+                {!event.readOnly && <button type="button" className="btn-ghost btn-xs" onClick={() => setEditingId(event.id)}>編輯</button>}
                 {!event.readOnly && <ConfirmDelete label="刪除這個事件？" onConfirm={() => onDelete(event.id)} />}
               </div>
             );
@@ -988,14 +1008,15 @@ function CalendarEventsPanel({ date, events, onDelete }) {
   );
 }
 
-function CalendarEventForm({ date, knownSchools, onCancel, onCreate }) {
-  const [dateInput, setDateInput] = useState(date);
-  const [rangeEndDate, setRangeEndDate] = useState(date);
-  const [selectedDates, setSelectedDates] = useState([date]);
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("schoolExam");
-  const [school, setSchool] = useState("");
-  const [note, setNote] = useState("");
+function CalendarEventForm({ date, initialEvent, knownSchools, onCancel, onCreate }) {
+  const initialDates = eventDates(initialEvent || { date });
+  const [dateInput, setDateInput] = useState(initialDates[0] || date);
+  const [rangeEndDate, setRangeEndDate] = useState(initialDates[initialDates.length - 1] || date);
+  const [selectedDates, setSelectedDates] = useState(initialDates.length ? initialDates : [date]);
+  const [title, setTitle] = useState(initialEvent?.title || "");
+  const [type, setType] = useState(initialEvent?.type || "schoolExam");
+  const [schools, setSchools] = useState(initialEvent?.schools?.length ? initialEvent.schools : (initialEvent?.school ? [initialEvent.school] : []));
+  const [note, setNote] = useState(initialEvent?.note || "");
 
   function addDates(dates) {
     setSelectedDates((current) => [...new Set([...current, ...dates].filter(Boolean))].sort());
@@ -1018,7 +1039,7 @@ function CalendarEventForm({ date, knownSchools, onCancel, onCreate }) {
   function submit() {
     const cleanTitle = title.trim();
     if (!cleanTitle || selectedDates.length === 0) return;
-    onCreate({ date: selectedDates[0], endDate: selectedDates[selectedDates.length - 1], dates: selectedDates, title: cleanTitle, type, school, note, source: "手動建立" });
+    onCreate({ date: selectedDates[0], endDate: selectedDates[selectedDates.length - 1], dates: selectedDates, title: cleanTitle, type, schools, note, source: "手動建立" });
   }
 
   return (
@@ -1028,7 +1049,7 @@ function CalendarEventForm({ date, knownSchools, onCancel, onCreate }) {
         <label className="field"><span>類型</span><select value={type} onChange={(e) => setType(e.target.value)}>{["schoolExam", "fieldTrip", "majorExam", "other"].map((value) => <option value={value} key={value}>{eventTypeMeta(value).label}</option>)}</select></label>
         <div className="field calendar-date-picker-field"><span>加入日期</span><div className="calendar-date-picker-row"><input type="date" value={dateInput} onChange={(e) => setDateInput(e.target.value)} /><button type="button" className="btn-ghost btn-sm" onClick={addSingleDate}>加入單日</button></div></div>
         <div className="field calendar-date-picker-field"><span>加入連續區間</span><div className="calendar-date-picker-row"><input type="date" min={dateInput} value={rangeEndDate} onChange={(e) => setRangeEndDate(e.target.value)} /><button type="button" className="btn-ghost btn-sm" disabled={!dateInput || !rangeEndDate || rangeEndDate < dateInput} onClick={addDateRange}>加入區間</button></div></div>
-        <label className="field"><span>適用學校（選填）</span><input list="calendar-school-options" value={school} onChange={(e) => setSchool(e.target.value)} placeholder="例：○○高中" /><datalist id="calendar-school-options">{(knownSchools || []).map((name) => <option key={name} value={name} />)}</datalist></label>
+        <div className="field calendar-schools-field"><span>適用學校（可複選）</span><details className="school-multi-picker"><summary>{schools.length ? `已選 ${schools.length} 所學校` : "全部學校"}</summary><div className="school-multi-options">{(knownSchools || []).length === 0 ? <span className="section-hint">目前沒有可選學校</span> : (knownSchools || []).map((name) => <label key={name}><input type="checkbox" checked={schools.includes(name)} onChange={() => setSchools((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name])} />{name}</label>)}</div></details></div>
         <label className="field calendar-event-note-field"><span>備註（選填）</span><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="例：以學校公告為準" /></label>
       </div>
       <div className="calendar-selected-dates"><span className="calendar-selected-dates-label">已選 {selectedDates.length} 日</span>{selectedDates.map((value) => <span className="calendar-date-chip" key={value}>{value}<button type="button" onClick={() => removeDate(value)} aria-label={`移除 ${value}`} disabled={selectedDates.length === 1}><X size={11} /></button></span>)}</div>
@@ -1040,7 +1061,7 @@ function CalendarEventForm({ date, knownSchools, onCancel, onCreate }) {
   );
 }
 
-function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, onDeleteCalendarEvent, calendarReady, officialCalendarStatus, calendarSaveState, knownSchools }) {
+function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, onDeleteCalendarEvent, onEditCalendarEvent, calendarReady, officialCalendarStatus, calendarSaveState, knownSchools }) {
   const [selected, setSelected] = useState(todayStr());
   const [attendanceMap, setAttendanceMap] = useState({});
   const classIdsKey = classes.map((c) => c.id).join(",");
@@ -1067,12 +1088,13 @@ function TodayView({ classes, onOpenClass, calendarEvents, onAddCalendarEvent, o
     .filter((c) => hasSession(c, selected))
     .map((c) => ({ c, time: getSessionInfo(c, selected).time }))
     .sort((a, b) => parseTimeMinutes(a.time) - parseTimeMinutes(b.time));
+  const selectedDayEvents = eventsOnDate(calendarEvents, selected);
 
   return (
     <div className="view-pad">
       <MonthCalendar selected={selected} onSelect={setSelected} classes={classes} hasSession={hasSession} calendarEvents={calendarEvents} onAddEvent={onAddCalendarEvent} knownSchools={knownSchools} calendarSaveState={calendarSaveState} />
 
-      <CalendarEventsPanel date={selected} events={calendarEvents} onDelete={onDeleteCalendarEvent} />
+      {selectedDayEvents.length > 0 && <CalendarEventsPanel date={selected} events={calendarEvents} onDelete={onDeleteCalendarEvent} onEdit={onEditCalendarEvent} knownSchools={knownSchools} />}
 
       <div className="section-label">{formatDisplay(selected)} 上課班級</div>
       {matches.length === 0 && <div className="empty-note">這天沒有排定的課。</div>}
@@ -2446,7 +2468,8 @@ const CSS = `
 
 .calendar { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
 .calendar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.calendar-title { font-family: 'Noto Serif TC', serif; font-weight: 700; font-size: 15px; }
+.calendar-title-group { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.calendar-title { font-family: 'Noto Serif TC', serif; font-weight: 700; font-size: 15px; white-space: nowrap; }
 .calendar-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-width: 0; }
 .calendar-weekdays { display: grid; grid-template-columns: repeat(7,1fr); text-align: center; font-size: 11px; color: var(--ink-soft); margin-bottom: 4px; }
 .calendar-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 3px; }
@@ -2473,9 +2496,19 @@ const CSS = `
 .calendar-events-count, .calendar-event-duration { color: var(--ink-soft); font-size: 11px; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
 .calendar-event-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 .calendar-event-row { display: flex; align-items: center; gap: 9px; padding: 6px 0; border-top: 1px solid var(--line); }
-.calendar-event-name { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 700; }
+.calendar-event-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.calendar-event-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 700; }
+.calendar-event-schools { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink-soft); font-size: 11px; }
 .calendar-event-form { margin-top: 10px; }
   .calendar-event-note-field { grid-column: 1 / -1; }
+  .calendar-schools-field { min-width: 0; }
+  .school-multi-picker { position: relative; }
+  .school-multi-picker summary { list-style: none; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card); color: var(--ink); font-size: 13px; cursor: pointer; }
+  .school-multi-picker summary::-webkit-details-marker { display: none; }
+  .school-multi-picker[open] summary { border-color: var(--brass); }
+  .school-multi-options { position: absolute; z-index: 3; left: 0; right: 0; display: flex; flex-direction: column; gap: 7px; max-height: 190px; overflow: auto; margin-top: 4px; padding: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 20px rgba(33,38,43,0.12); }
+  .school-multi-options label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+  .school-multi-options input { accent-color: var(--brass); }
   .calendar-date-picker-row { display: flex; align-items: center; gap: 6px; }
   .calendar-date-picker-row input { min-width: 0; flex: 1; }
   .calendar-selected-dates { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 10px; }
@@ -2483,6 +2516,7 @@ const CSS = `
   .calendar-date-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 7px; background: #F8F5EE; color: var(--ink-soft); font-size: 11px; font-family: 'IBM Plex Mono', monospace; }
   .calendar-date-chip button { display: inline-flex; align-items: center; border: 0; padding: 0; background: none; color: var(--ink-soft); }
   .calendar-date-chip button:disabled { opacity: 0.35; cursor: default; }
+  .btn-xs { padding: 4px 7px; font-size: 11px; }
 
 .card-list { display: flex; flex-direction: column; gap: 8px; }
 

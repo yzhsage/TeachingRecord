@@ -60,6 +60,8 @@ export function normalizeEvent(event) {
   const lastDate = rawDates[rawDates.length - 1] || (isDateString(event.endDate) && event.endDate >= firstDate ? event.endDate : firstDate);
   const dates = rawDates.length ? rawDates : inclusiveDates(firstDate, lastDate);
   const type = CALENDAR_EVENT_META[event.type] ? event.type : "other";
+  const rawSchools = Array.isArray(event.schools) ? event.schools : [event.school];
+  const schools = [...new Set(rawSchools.map((school) => String(school || "").trim()).filter(Boolean))].slice(0, 30);
   return {
     id: String(event.id || ""),
     date: firstDate,
@@ -68,7 +70,8 @@ export function normalizeEvent(event) {
     title: String(event.title).trim().slice(0, 80),
     type,
     note: String(event.note || "").trim().slice(0, 300),
-    school: String(event.school || "").trim().slice(0, 80),
+    schools,
+    school: schools[0] || "",
     source: String(event.source || "手動建立").trim().slice(0, 120),
     sourceUrl: /^https?:\/\//.test(String(event.sourceUrl || "").trim()) ? String(event.sourceUrl).trim() : "",
     readOnly: Boolean(event.readOnly),

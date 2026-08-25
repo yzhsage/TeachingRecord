@@ -34,3 +34,9 @@ test("normalizeEvent rejects incomplete input and clamps unsafe text", () => {
   assert.equal(event.type, "other");
   assert.equal(event.sourceUrl, "");
 });
+
+test("normalizeEvent preserves unique multiple schools", () => {
+  const event = normalizeEvent({ date: "2026-10-01", title: "段考", schools: ["甲高中", "甲高中", "乙高中", ""] });
+  assert.deepEqual(event.schools, ["甲高中", "乙高中"]);
+  assert.equal(event.school, "甲高中");
+});
