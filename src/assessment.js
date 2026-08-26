@@ -45,3 +45,27 @@ export function median(values) {
   const middle = Math.floor(scores.length / 2);
   return scores.length % 2 ? scores[middle] : (scores[middle - 1] + scores[middle]) / 2;
 }
+
+/**
+ * Return whether a student should be counted as enrolled on an assessment date.
+ * joinDate is inclusive and endDate is the last date the student attended;
+ * legacy stopped/active flags without an endDate remain stopped for all dates.
+ */
+export function isStudentEnrolledOnDate(student, dateStr) {
+  if (!student || !dateStr) return true;
+  if (student.joinDate && dateStr < student.joinDate) return false;
+  if (student.endDate && dateStr > student.endDate) return false;
+  if (student.membership === "stopped" || student.active === false) return Boolean(student.endDate) && dateStr <= student.endDate;
+  return true;
+}
+
+export function studentsEnrolledOnDate(students, dateStr) {
+  return (students || []).filter((student) => isStudentEnrolledOnDate(student, dateStr));
+}
+
+export function assessmentCapacity(columns) {
+  return (columns || []).reduce((total, column) => {
+    const count = Number(column?.enrolledCount);
+    return total + (Number.isFinite(count) && count >= 0 ? count : 0);
+  }, 0);
+}

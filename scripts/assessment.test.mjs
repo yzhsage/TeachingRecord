@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  assessmentCapacity,
   buildScoreDistribution,
+  isStudentEnrolledOnDate,
   median,
   numericScore,
+  studentsEnrolledOnDate,
   scoreBand,
   scoreDelta,
   scorePercent,
@@ -51,4 +54,27 @@ test("scoreDelta reports first, latest, and change while preserving a zero first
   assert.deepEqual(scoreDelta([0, 25, "40"]), { first: 0, latest: 40, delta: 40 });
   assert.deepEqual(scoreDelta([88]), { first: 88, latest: 88, delta: null });
   assert.deepEqual(scoreDelta(["", "bad"]), { first: null, latest: null, delta: null });
+});
+
+test("student enrollment uses the assessment date rather than today's roster", () => {
+  const students = [
+    { id: "active", name: "仍在班" },
+    { id: "joined-later", name: "後來入班", joinDate: "2026-09-01" },
+    { id: "left", name: "已停班", endDate: "2026-08-15" },
+    { id: "legacy-stopped", name: "舊停班", membership: "stopped" },
+    { id: "legacy-active-false", name: "舊停班旗標", active: false },
+  ];
+
+  assert.equal(isStudentEnrolledOnDate(students[1], "2026-08-31"), false);
+  assert.equal(isStudentEnrolledOnDate(students[2], "2026-08-15"), true);
+  assert.equal(isStudentEnrolledOnDate(students[2], "2026-08-16"), false);
+  assert.equal(isStudentEnrolledOnDate(students[3], "2026-08-01"), false);
+  assert.equal(isStudentEnrolledOnDate(students[4], "2026-08-01"), false);
+  assert.deepEqual(studentsEnrolledOnDate(students, "2026-08-15").map((student) => student.id), ["active", "left"]);
+  assert.deepEqual(studentsEnrolledOnDate(students, "").map((student) => student.id), students.map((student) => student.id));
+});
+
+test("assessmentCapacity sums each assessment's historical enrolled count", () => {
+  assert.equal(assessmentCapacity([{ enrolledCount: 5 }, { enrolledCount: 3 }, { enrolledCount: 0 }]), 8);
+  assert.equal(assessmentCapacity([{ count: 10 }, {}]), 0);
 });

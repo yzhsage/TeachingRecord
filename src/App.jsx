@@ -12,7 +12,7 @@ import { ref, get, set as dbSet, update as dbUpdate } from "firebase/database";
 import { signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
-import { buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent } from "./assessment";
+import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate } from "./assessment";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -1621,7 +1621,7 @@ function ScoreOverview({ unitLabel, classAvg, classMedian, classMax, classMin, p
           <div className="section-hint">{unitLabel}整體表現</div>
           <div className="score-dashboard-title">看平均，也看分布與完成度</div>
         </div>
-        <span className="score-dashboard-note">分數色帶以 100 分量尺顯示 · 僅統計目前篩選範圍</span>
+        <span className="score-dashboard-note">分數色帶以 100 分量尺顯示 · 人數依各次評量日期計算</span>
       </div>
       <div className="score-metric-grid">
         <ScoreMetric label="平均" value={fmtNum(classAvg)} detail="全班平均" tone="primary" />
@@ -1768,9 +1768,15 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
     });
   const rosterStudents = cls.students.filter((s) => getMembership(s) !== "stopped" || hasAnyScoreEverywhere(s));
 
+  // 每次評量的應計班級人數要以該評量日期判定，不能使用目前表格名單。
+  // joinDate／endDate 讓後來入班或已停班學生不會被錯算進歷史評量分母。
+  const assessmentColumns = filteredColumns.map((col) => ({
+    col,
+    enrolledStudents: studentsEnrolledOnDate(cls.students, col.date),
+  }));
   const pooled = [];
-  filteredColumns.forEach((col) => {
-    rosterStudents.forEach((s) => {
+  assessmentColumns.forEach(({ col, enrolledStudents }) => {
+    enrolledStudents.forEach((s) => {
       const v = (data.scores[col.id] || {})[s.id]?.score;
       if (v !== undefined && v !== "" && !Number.isNaN(Number(v))) pooled.push(Number(v));
     });
@@ -1781,24 +1787,25 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   const classMax = pooled.length ? Math.max(...pooled) : null;
   const classMin = pooled.length ? Math.min(...pooled) : null;
   const passCount = pooled.filter((value) => value >= 60).length;
-  const possibleScores = rosterStudents.length * filteredColumns.length;
+  const possibleScores = assessmentCapacity(assessmentColumns.map(({ enrolledStudents }) => ({ enrolledCount: enrolledStudents.length })));
   const completionRate = possibleScores ? Math.round((pooled.length / possibleScores) * 1000) / 10 : null;
   const passRate = pooled.length ? Math.round((passCount / pooled.length) * 1000) / 10 : null;
   const scoreDistribution = buildScoreDistribution(pooled);
 
-  const columnStats = filteredColumns.map((col) => {
-    const values = rosterStudents
+    const columnStats = assessmentColumns.map(({ col, enrolledStudents }) => {
+    const values = enrolledStudents
       .map((s) => (data.scores[col.id] || {})[s.id]?.score)
       .map(numericScore)
       .filter((value) => value !== null);
-    return { col, values, avg: mean(values), median: median(values), highest: values.length ? Math.max(...values) : null, lowest: values.length ? Math.min(...values) : null, count: values.length };
+    return { col, values, avg: mean(values), median: median(values), highest: values.length ? Math.max(...values) : null, lowest: values.length ? Math.min(...values) : null, count: values.length, enrolledCount: enrolledStudents.length };
   });
-
   const studentStatsBase = rosterStudents.map((s) => {
-    const vals = filteredColumns
-      .map((col) => (data.scores[col.id] || {})[s.id]?.score)
+    const vals = assessmentColumns
+      .filter(({ enrolledStudents }) => enrolledStudents.some((enrolledStudent) => enrolledStudent.id === s.id))
+      .map(({ col }) => (data.scores[col.id] || {})[s.id]?.score)
       .filter((v) => v !== undefined && v !== "" && !Number.isNaN(Number(v)))
       .map(Number);
+
     const improvement =
       vals.length >= 2 && vals[0] !== 0 ? Math.round(((vals[vals.length - 1] - vals[0]) / Math.abs(vals[0])) * 1000) / 10 : null;
     const delta = scoreDelta(vals).delta;
@@ -1812,14 +1819,15 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   });
   const leaderboard = studentStats.filter((s) => s.count > 0).sort((a, b) => b.avg - a.avg || a.student.name.localeCompare(b.student.name, "zh-Hant"));
 
-  const chartData = filteredColumns.map((col) => {
-    const colVals = rosterStudents
+  const chartData = assessmentColumns.map(({ col, enrolledStudents }) => {
+    const colVals = enrolledStudents
       .map((s) => (data.scores[col.id] || {})[s.id]?.score)
       .filter((v) => v !== undefined && v !== "" && !Number.isNaN(Number(v)))
       .map(Number);
     const row = { name: col.name, 班平均: mean(colVals) };
     if (focusStudentId) {
-      const v = (data.scores[col.id] || {})[focusStudentId]?.score;
+      const focusStudent = enrolledStudents.find((student) => student.id === focusStudentId);
+      const v = focusStudent ? (data.scores[col.id] || {})[focusStudentId]?.score : undefined;
       row[rosterStudents.find((s) => s.id === focusStudentId)?.name || "個人"] =
         v !== undefined && v !== "" && !Number.isNaN(Number(v)) ? Number(v) : null;
     }
@@ -1896,13 +1904,13 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
           <div className="assessment-column-section">
             <div className="score-section-title">各次{unitLabel}比較</div>
             <div className="assessment-column-strip">
-              {columnStats.map(({ col, avg, median: columnMedian, highest, lowest, count }) => {
+              {columnStats.map(({ col, avg, median: columnMedian, highest, lowest, count, enrolledCount }) => {
                 const band = scoreBand(avg);
                 return (
                   <div className="assessment-column-card" key={col.id}>
                     <div className="assessment-column-card-top">
                       <div className="assessment-column-name">{col.name}</div>
-                      <span className="assessment-column-count">{count}/{rosterStudents.length} 人</span>
+                      <span className="assessment-column-count">已填 {count} / 當時 {enrolledCount} 人</span>
                     </div>
                     <div className="assessment-column-date">{col.date}{col.subject ? ` · ${col.subject}` : ""}</div>
                     <div className="assessment-column-score-row">
