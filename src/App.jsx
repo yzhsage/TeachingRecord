@@ -1685,6 +1685,8 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   const [subjectFilter, setSubjectFilter] = useState("all");
   const [segmentFilter, setSegmentFilter] = useState("all");
   const [focusStudentId, setFocusStudentId] = useState("");
+  const [editingColumnId, setEditingColumnId] = useState(null);
+  const [editingColumnName, setEditingColumnName] = useState("");
 
   const hasSubjects = (cls.subjects || []).length > 0;
 
@@ -1704,6 +1706,36 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
       delete scores[colId];
       return { columns: prev.columns.filter((c) => c.id !== colId), scores };
     });
+    if (editingColumnId === colId) {
+      setEditingColumnId(null);
+      setEditingColumnName("");
+    }
+  }
+  function startEditingColumn(col) {
+    setEditingColumnId(col.id);
+    setEditingColumnName(col.name || "");
+  }
+  function cancelEditingColumn() {
+    setEditingColumnId(null);
+    setEditingColumnName("");
+  }
+  function saveColumnName(colId) {
+    const nextName = editingColumnName.trim();
+    if (!nextName) return;
+    setData((prev) => ({
+      ...prev,
+      columns: prev.columns.map((col) => (col.id === colId ? { ...col, name: nextName } : col)),
+    }));
+    cancelEditingColumn();
+  }
+  function handleColumnNameKeyDown(event, colId) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveColumnName(colId);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelEditingColumn();
+    }
   }
   function setCell(colId, studentId, field, value) {
     setData((prev) => {
@@ -1943,10 +1975,23 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
                   <th className="matrix-corner">學生</th>
                   {filteredColumns.map((col) => (
                     <th key={col.id} className="matrix-col-head">
-                      <div className="matrix-col-head-top">
-                        <div className="matrix-col-name">{col.name}</div>
-                        <ConfirmDelete title={`刪除${unitLabel}「${col.name}」`} label="刪除這項？" onConfirm={() => removeColumn(col.id)} />
-                      </div>
+                      {editingColumnId === col.id ? (
+                        <div className="assessment-name-editor">
+                          <input className="assessment-name-input" value={editingColumnName} onChange={(event) => setEditingColumnName(event.target.value)} onKeyDown={(event) => handleColumnNameKeyDown(event, col.id)} aria-label={`修改${unitLabel}名稱`} autoFocus />
+                          <div className="assessment-name-editor-actions">
+                            <button className="btn-primary btn-xs" onClick={() => saveColumnName(col.id)} disabled={!editingColumnName.trim()}>儲存</button>
+                            <button className="btn-ghost btn-xs" onClick={cancelEditingColumn}>取消</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="matrix-col-head-top">
+                          <div className="matrix-col-name">{col.name}</div>
+                          <div className="matrix-col-head-actions">
+                            <IconBtn title={`修改${unitLabel}「${col.name}」名稱`} onClick={() => startEditingColumn(col)}><Pencil size={14} /></IconBtn>
+                            <ConfirmDelete title={`刪除${unitLabel}「${col.name}」`} label="刪除這項？" onConfirm={() => removeColumn(col.id)} />
+                          </div>
+                        </div>
+                      )}
                       <div className="matrix-col-date">{col.date}{col.subject ? ` · ${col.subject}` : ""}{col.segment ? ` · ${col.segment}` : ""}</div>
                     </th>
                   ))}
@@ -2845,7 +2890,12 @@ const CSS = `
 .matrix-col-head-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 5px; min-height: 28px; }
 .matrix-col-head-top .confirm-inline { padding: 2px 3px; }
 .matrix-col-head-top .icon-btn { width: 25px; height: 25px; border-radius: 6px; }
+.matrix-col-head-actions { display: flex; align-items: flex-start; gap: 2px; flex-shrink: 0; }
 .matrix-col-name { min-width: 0; padding-top: 3px; font-weight: 700; overflow-wrap: anywhere; }
+.assessment-name-editor { width: 100%; }
+.assessment-name-input { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--brass); border-radius: 6px; padding: 5px 6px; background: #FFFDF7; color: var(--ink); font-family: inherit; font-size: 12px; font-weight: 600; outline: 2px solid rgba(184,134,59,0.16); }
+.assessment-name-editor-actions { display: flex; align-items: center; gap: 4px; margin-top: 5px; }
+.assessment-name-editor-actions .btn-xs { padding: 4px 7px; }
 .matrix-col-date { color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; font-size: 10px; margin-bottom: 4px; }
 .matrix-cell { text-align: center; }
 .matrix-input { width: 64px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; text-align: center; transition: background 0.15s ease, border-color 0.15s ease; }
