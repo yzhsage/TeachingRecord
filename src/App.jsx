@@ -12,6 +12,7 @@ import { ref, get, set as dbSet, update as dbUpdate } from "firebase/database";
 import { signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
+import { buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent } from "./assessment";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -1601,6 +1602,80 @@ function AttendanceOverview({ cls, data, onJump }) {
 /* Assessment tab (shared by 平時考 / 段考)                             */
 /* ------------------------------------------------------------------ */
 
+function ScoreMetric({ label, value, detail, tone }) {
+  return (
+    <div className={"score-metric" + (tone ? ` score-metric-${tone}` : "")}>
+      <span className="score-metric-label">{label}</span>
+      <strong className="score-metric-value">{value}</strong>
+      {detail && <span className="score-metric-detail">{detail}</span>}
+    </div>
+  );
+}
+
+function ScoreOverview({ unitLabel, classAvg, classMedian, classMax, classMin, passRate, completionRate, scoreDistribution }) {
+  const hasScores = scoreDistribution.some((band) => band.count > 0);
+  return (
+    <div className="score-dashboard">
+      <div className="score-dashboard-heading">
+        <div>
+          <div className="section-hint">{unitLabel}整體表現</div>
+          <div className="score-dashboard-title">看平均，也看分布與完成度</div>
+        </div>
+        <span className="score-dashboard-note">分數色帶以 100 分量尺顯示 · 僅統計目前篩選範圍</span>
+      </div>
+      <div className="score-metric-grid">
+        <ScoreMetric label="平均" value={fmtNum(classAvg)} detail="全班平均" tone="primary" />
+        <ScoreMetric label="中位數" value={fmtNum(classMedian)} detail="一半高於此分數" />
+        <ScoreMetric label="最高／最低" value={`${fmtNum(classMax)} / ${fmtNum(classMin)}`} detail="目前已填分數" />
+        <ScoreMetric label="及格率" value={passRate === null ? "—" : `${passRate}%`} detail="分數 ≥ 60" tone={passRate !== null && passRate >= 60 ? "positive" : "warning"} />
+        <ScoreMetric label="填寫率" value={completionRate === null ? "—" : `${completionRate}%`} detail="已填／應填" />
+      </div>
+      <div className="score-distribution">
+        <div className="score-section-title">分數分布</div>
+        {!hasScores ? <div className="empty-note">尚未填入分數。</div> : (
+          <div className="score-distribution-list">
+            {scoreDistribution.map((band) => (
+              <div className="score-distribution-row" key={band.key}>
+                <span className="score-distribution-label">{band.label}</span>
+                <div className="score-distribution-track"><span className="score-distribution-fill" style={{ width: `${band.percent}%`, background: band.color }} /></div>
+                <span className="score-distribution-count">{band.count} 人 <small>{band.percent}%</small></span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScoreLeaderboard({ leaderboard }) {
+  if (leaderboard.length === 0) return null;
+  return (
+    <div className="score-leaderboard">
+      <div className="score-section-title">個別表現</div>
+      <div className="score-leaderboard-list">
+        {leaderboard.map(({ student, avg, count, delta, latest, pr }, index) => {
+          const band = scoreBand(avg);
+          const deltaText = delta === null ? "—" : `${delta > 0 ? "+" : ""}${fmtNum(delta)}`;
+          return (
+            <div className="score-leaderboard-row" key={student.id}>
+              <span className="score-leaderboard-rank">{index + 1}</span>
+              <div className="score-leaderboard-main">
+                <div className="score-leaderboard-name">{student.name}<span className="score-leaderboard-count">{count} 次</span></div>
+                <div className="score-leaderboard-track"><span className="score-leaderboard-fill" style={{ width: `${scorePercent(avg)}%`, background: band?.color || "var(--brass)" }} /></div>
+              </div>
+              <strong className="score-leaderboard-score">{fmtNum(avg)}</strong>
+              <span className={"score-leaderboard-delta" + (delta > 0 ? " is-up" : delta < 0 ? " is-down" : "")}>{deltaText}</span>
+              <span className="score-leaderboard-pr">PR {pr === null ? "—" : pr}</span>
+              <span className="score-leaderboard-latest">最近 {fmtNum(latest)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }) {
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -1670,6 +1745,22 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   });
   const classAvg = mean(pooled);
   const classStd = stddev(pooled);
+  const classMedian = median(pooled);
+  const classMax = pooled.length ? Math.max(...pooled) : null;
+  const classMin = pooled.length ? Math.min(...pooled) : null;
+  const passCount = pooled.filter((value) => value >= 60).length;
+  const possibleScores = rosterStudents.length * filteredColumns.length;
+  const completionRate = possibleScores ? Math.round((pooled.length / possibleScores) * 1000) / 10 : null;
+  const passRate = pooled.length ? Math.round((passCount / pooled.length) * 1000) / 10 : null;
+  const scoreDistribution = buildScoreDistribution(pooled);
+
+  const columnStats = filteredColumns.map((col) => {
+    const values = rosterStudents
+      .map((s) => (data.scores[col.id] || {})[s.id]?.score)
+      .map(numericScore)
+      .filter((value) => value !== null);
+    return { col, values, avg: mean(values), median: median(values), highest: values.length ? Math.max(...values) : null, lowest: values.length ? Math.min(...values) : null, count: values.length };
+  });
 
   const studentStatsBase = rosterStudents.map((s) => {
     const vals = filteredColumns
@@ -1678,7 +1769,8 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
       .map(Number);
     const improvement =
       vals.length >= 2 && vals[0] !== 0 ? Math.round(((vals[vals.length - 1] - vals[0]) / Math.abs(vals[0])) * 1000) / 10 : null;
-    return { student: s, avg: mean(vals), std: stddev(vals), count: vals.length, improvement };
+    const delta = scoreDelta(vals).delta;
+    return { student: s, avg: mean(vals), std: stddev(vals), count: vals.length, improvement, delta, latest: vals.at(-1) ?? null, highest: vals.length ? Math.max(...vals) : null, lowest: vals.length ? Math.min(...vals) : null };
   });
   const sortedAvgs = studentStatsBase.filter((s) => s.count > 0).map((s) => s.avg).sort((a, b) => a - b);
   const studentStats = studentStatsBase.map((s) => {
@@ -1686,6 +1778,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
     const below = sortedAvgs.filter((a) => a < s.avg).length;
     return { ...s, pr: Math.round((below / (sortedAvgs.length - 1)) * 100) };
   });
+  const leaderboard = studentStats.filter((s) => s.count > 0).sort((a, b) => b.avg - a.avg || a.student.name.localeCompare(b.student.name, "zh-Hant"));
 
   const chartData = filteredColumns.map((col) => {
     const colVals = rosterStudents
@@ -1757,24 +1850,67 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
         <div className="empty-note">尚未新增任何{unitLabel}。</div>
       ) : (
         <>
+          <ScoreOverview
+            unitLabel={unitLabel}
+            classAvg={classAvg}
+            classMedian={classMedian}
+            classMax={classMax}
+            classMin={classMin}
+            passRate={passRate}
+            completionRate={completionRate}
+            scoreDistribution={scoreDistribution}
+          />
+
+          <div className="assessment-column-section">
+            <div className="score-section-title">各次{unitLabel}比較</div>
+            <div className="assessment-column-strip">
+              {columnStats.map(({ col, avg, median: columnMedian, highest, lowest, count }) => {
+                const band = scoreBand(avg);
+                return (
+                  <div className="assessment-column-card" key={col.id}>
+                    <div className="assessment-column-card-top">
+                      <div className="assessment-column-name">{col.name}</div>
+                      <span className="assessment-column-count">{count}/{rosterStudents.length} 人</span>
+                    </div>
+                    <div className="assessment-column-date">{col.date}{col.subject ? ` · ${col.subject}` : ""}</div>
+                    <div className="assessment-column-score-row">
+                      <strong>{fmtNum(avg)}</strong>
+                      <span>平均</span>
+                    </div>
+                    <div className="assessment-column-bar"><span style={{ width: `${scorePercent(avg)}%`, background: band?.color || "var(--brass)" }} /></div>
+                    <div className="assessment-column-range">中位 {fmtNum(columnMedian)} · {fmtNum(lowest)}–{fmtNum(highest)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <ScoreLeaderboard leaderboard={leaderboard} />
+
           <div className="stats-panel">
             <div className="stats-row-head">
               <span>全班平均</span><span>{fmtNum(classAvg)}</span>
               <span>標準差</span><span>{fmtNum(classStd)}</span>
             </div>
             <div className="stats-table stats-table-scroll">
-              <div className="stats-table-row-5 stats-table-head"><span>學生</span><span>平均</span><span>標準差</span><span>PR</span><span>進步率</span></div>
-              {studentStats.map(({ student, avg, std, count, pr, improvement }) => (
-                <div className="stats-table-row-5" key={student.id}>
-                  <span>{student.name}</span>
-                  <span>{count ? fmtNum(avg) : "—"}</span>
-                  <span>{count > 1 ? fmtNum(std) : "—"}</span>
-                  <span>{pr !== null ? pr : "—"}</span>
-                  <span>{improvement !== null ? `${improvement > 0 ? "+" : ""}${improvement}%` : "—"}</span>
-                </div>
-              ))}
+              <div className="stats-table-row-8 stats-table-head"><span>學生</span><span>平均</span><span>最新</span><span>變化</span><span>班均差</span><span>最高</span><span>最低</span><span>PR</span></div>
+              {studentStats.map(({ student, avg, std, count, pr, delta, latest, highest, lowest }) => {
+                const relativeToClass = avg !== null && classAvg !== null ? avg - classAvg : null;
+                return (
+                  <div className="stats-table-row-8" key={student.id}>
+                    <span title={std === null ? "尚無足夠資料計算標準差" : `標準差 ${fmtNum(std)}`}>{student.name}</span>
+                    <span>{count ? fmtNum(avg) : "—"}</span>
+                    <span>{fmtNum(latest)}</span>
+                    <span className={delta > 0 ? "stat-positive" : delta < 0 ? "stat-negative" : ""}>{delta === null ? "—" : `${delta > 0 ? "+" : ""}${fmtNum(delta)}`}</span>
+                    <span className={relativeToClass > 0 ? "stat-positive" : relativeToClass < 0 ? "stat-negative" : ""}>{relativeToClass === null ? "—" : `${relativeToClass > 0 ? "+" : ""}${fmtNum(relativeToClass)}`}</span>
+                    <span>{fmtNum(highest)}</span>
+                    <span>{fmtNum(lowest)}</span>
+                    <span>{pr !== null ? pr : "—"}</span>
+                  </div>
+                );
+              })}
             </div>
-            <div className="section-hint" style={{ marginTop: 6 }}>PR：在目前篩選範圍內贏過多少百分比的同學（100 為最高）。進步率：篩選範圍內第一次到最後一次成績的變化幅度。</div>
+            <div className="section-hint" style={{ marginTop: 6 }}>變化：篩選範圍內第一次到最後一次的分數差；班均差：個人平均減全班平均。各欄的標準差可將游標移到學生姓名查看。</div>
           </div>
 
           <div className="chart-card">
@@ -1807,9 +1943,11 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
                   <th className="matrix-corner">學生</th>
                   {filteredColumns.map((col) => (
                     <th key={col.id} className="matrix-col-head">
-                      <div className="matrix-col-name">{col.name}</div>
+                      <div className="matrix-col-head-top">
+                        <div className="matrix-col-name">{col.name}</div>
+                        <ConfirmDelete title={`刪除${unitLabel}「${col.name}」`} label="刪除這項？" onConfirm={() => removeColumn(col.id)} />
+                      </div>
                       <div className="matrix-col-date">{col.date}{col.subject ? ` · ${col.subject}` : ""}{col.segment ? ` · ${col.segment}` : ""}</div>
-                      <ConfirmDelete label="刪除這項？" onConfirm={() => removeColumn(col.id)} />
                     </th>
                   ))}
                 </tr>
@@ -1820,10 +1958,11 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
                     <td className="matrix-row-head">{s.name}</td>
                     {filteredColumns.map((col) => {
                       const cell = (data.scores[col.id] || {})[s.id] || {};
+                      const band = scoreBand(cell.score);
                       return (
                         <td key={col.id} className="matrix-cell">
-                          <input className="matrix-input" inputMode="decimal" value={cell.score ?? ""} onChange={(e) => setCell(col.id, s.id, "score", e.target.value)} placeholder="分數" />
-                          {withRank && <input className="matrix-input matrix-input-sub" value={cell.rank ?? ""} onChange={(e) => setCell(col.id, s.id, "rank", e.target.value)} placeholder="班排/校排" />}
+                          <input className={"matrix-input" + (band ? ` matrix-input-band-${band.key}` : "")} inputMode="decimal" value={cell.score ?? ""} onChange={(e) => setCell(col.id, s.id, "score", e.target.value)} placeholder="分數" aria-label={`${s.name} ${col.name}分數`} />
+                          {withRank && <input className="matrix-input matrix-input-sub" value={cell.rank ?? ""} onChange={(e) => setCell(col.id, s.id, "rank", e.target.value)} placeholder="班排/校排" aria-label={`${s.name} ${col.name}班排或校排`} />}
                         </td>
                       );
                     })}
@@ -2636,6 +2775,10 @@ const CSS = `
 .stats-table-row span:nth-child(2), .stats-table-row span:nth-child(3) { font-family: 'IBM Plex Mono', monospace; text-align: right; }
 .stats-table-row-5 { display: grid; grid-template-columns: minmax(60px,1fr) 44px 44px 36px 52px; font-size: 12px; padding: 4px 2px; gap: 3px; }
 .stats-table-row-5 span:not(:first-child) { font-family: 'IBM Plex Mono', monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.stats-table-row-8 { display: grid; grid-template-columns: minmax(74px,1.2fr) repeat(7, minmax(48px, 1fr)); min-width: 450px; font-size: 11px; padding: 4px 2px; gap: 3px; }
+.stats-table-row-8 span:not(:first-child) { font-family: 'IBM Plex Mono', monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.stat-positive { color: #3F7D5C; font-weight: 700; }
+.stat-negative { color: #B23A34; font-weight: 700; }
 .stats-table-row-rate { display: grid; grid-template-columns: minmax(60px,1fr) 44px 44px 44px 44px; font-size: 12px; padding: 4px 2px; gap: 3px; }
 .stats-table-row-rate span:not(:first-child) { font-family: 'IBM Plex Mono', monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .stats-table-scroll { overflow-x: auto; max-width: 100%; }
@@ -2647,17 +2790,80 @@ const CSS = `
 
 .chart-card { margin-top: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
 
+.score-dashboard { margin-top: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.score-dashboard-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.score-dashboard-title { margin-top: 2px; font-size: 15px; font-weight: 700; }
+.score-dashboard-note { flex-shrink: 0; color: var(--ink-soft); font-size: 11px; }
+.score-metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }
+.score-metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #F8F5EE; }
+.score-metric-primary { background: var(--ink); border-color: var(--ink); color: white; }
+.score-metric-positive { background: #EAF3EC; border-color: #BFDCC9; }
+.score-metric-warning { background: #FBF3DE; border-color: #EFDBA0; }
+.score-metric-label, .score-metric-detail { display: block; color: var(--ink-soft); font-size: 11px; }
+.score-metric-primary .score-metric-label, .score-metric-primary .score-metric-detail { color: rgba(255,255,255,0.72); }
+.score-metric-value { display: block; margin: 4px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'IBM Plex Mono', monospace; font-size: 18px; }
+.score-distribution, .score-leaderboard { margin-top: 14px; }
+.score-section-title { margin-bottom: 8px; font-size: 12px; font-weight: 700; color: var(--ink-soft); }
+.score-distribution-list { display: flex; flex-direction: column; gap: 6px; }
+.score-distribution-row { display: grid; grid-template-columns: 62px minmax(80px, 1fr) 72px; align-items: center; gap: 8px; font-size: 11px; }
+.score-distribution-label { color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; }
+.score-distribution-track, .score-leaderboard-track { height: 9px; overflow: hidden; border-radius: 999px; background: #EEEEEC; }
+.score-distribution-fill, .score-leaderboard-fill { display: block; height: 100%; min-width: 0; border-radius: inherit; transition: width 0.2s ease; }
+.score-distribution-count { text-align: right; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+.score-distribution-count small { color: var(--ink-soft); font-family: inherit; }
+.assessment-column-section { margin-top: 14px; }
+.assessment-column-strip { display: flex; gap: 8px; overflow-x: auto; padding: 1px 1px 4px; }
+.assessment-column-card { flex: 0 0 180px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #F8F5EE; }
+.assessment-column-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.assessment-column-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+.assessment-column-count, .assessment-column-date, .assessment-column-range { color: var(--ink-soft); font-size: 10px; }
+.assessment-column-date { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'IBM Plex Mono', monospace; }
+.assessment-column-score-row { display: flex; align-items: baseline; gap: 5px; margin-top: 9px; }
+.assessment-column-score-row strong { font-family: 'IBM Plex Mono', monospace; font-size: 21px; }
+.assessment-column-score-row span { color: var(--ink-soft); font-size: 10px; }
+.assessment-column-bar { height: 7px; overflow: hidden; margin: 4px 0 6px; border-radius: 999px; background: #EEEEEC; }
+.assessment-column-bar span { display: block; height: 100%; border-radius: inherit; }
+.score-leaderboard-list { display: flex; flex-direction: column; gap: 5px; }
+.score-leaderboard-row { display: grid; grid-template-columns: 22px minmax(120px, 1fr) 48px 42px 46px 74px; align-items: center; gap: 7px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: #F8F5EE; font-size: 11px; }
+.score-leaderboard-rank { color: var(--ink-soft); text-align: center; font-family: 'IBM Plex Mono', monospace; }
+.score-leaderboard-name { display: flex; align-items: center; gap: 5px; overflow: hidden; font-weight: 600; }
+.score-leaderboard-name > span:first-child, .score-leaderboard-count { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.score-leaderboard-count { flex-shrink: 0; color: var(--ink-soft); font-size: 10px; font-weight: 400; }
+.score-leaderboard-track { height: 7px; margin-top: 4px; }
+.score-leaderboard-score, .score-leaderboard-delta, .score-leaderboard-pr, .score-leaderboard-latest { overflow: hidden; text-align: right; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+.score-leaderboard-score { font-size: 14px; }
+.score-leaderboard-delta.is-up { color: #3F7D5C; }
+.score-leaderboard-delta.is-down { color: #B23A34; }
+.score-leaderboard-pr, .score-leaderboard-latest { color: var(--ink-soft); font-size: 10px; }
+
 .matrix-scroll { overflow-x: auto; margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; }
 .matrix { border-collapse: collapse; width: 100%; background: var(--card); }
 .matrix th, .matrix td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: 6px 8px; }
 .matrix-corner { position: sticky; left: 0; background: var(--card); z-index: 2; min-width: 76px; font-size: 12px; color: var(--ink-soft); text-align: left; }
 .matrix-row-head { position: sticky; left: 0; background: var(--card); z-index: 1; font-size: 13px; font-weight: 500; white-space: nowrap; }
 .matrix-col-head { min-width: 110px; position: relative; font-size: 12px; }
-.matrix-col-name { font-weight: 700; }
+.matrix-col-head-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 5px; min-height: 28px; }
+.matrix-col-head-top .confirm-inline { padding: 2px 3px; }
+.matrix-col-head-top .icon-btn { width: 25px; height: 25px; border-radius: 6px; }
+.matrix-col-name { min-width: 0; padding-top: 3px; font-weight: 700; overflow-wrap: anywhere; }
 .matrix-col-date { color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; font-size: 10px; margin-bottom: 4px; }
 .matrix-cell { text-align: center; }
-.matrix-input { width: 64px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; text-align: center; }
+.matrix-input { width: 64px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; text-align: center; transition: background 0.15s ease, border-color 0.15s ease; }
+.matrix-input::placeholder { color: #A2A5A1; }
+.matrix-input-band-excellent { background: #EAF3EC; border-color: #BFDCC9; color: #3F7D5C; font-weight: 700; }
+.matrix-input-band-good { background: #E9EFF6; border-color: #C3D3E7; color: #3F5E8C; font-weight: 700; }
+.matrix-input-band-fair { background: #FBF3DE; border-color: #EFDBA0; color: #8C6D2E; font-weight: 700; }
+.matrix-input-band-pass { background: #F3EEE3; border-color: #DCCCA8; color: #8C6D3F; font-weight: 700; }
+.matrix-input-band-below { background: #FBEAE9; border-color: #F0C6C3; color: #B23A34; font-weight: 700; }
 .matrix-input-sub { margin-top: 4px; font-size: 11px; color: var(--ink-soft); }
+
+@media (max-width: 720px) {
+  .score-dashboard-heading { flex-direction: column; gap: 2px; }
+  .score-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .score-metric:first-child { grid-column: span 2; }
+  .score-leaderboard-row { grid-template-columns: 20px minmax(100px, 1fr) 48px 42px; }
+  .score-leaderboard-pr, .score-leaderboard-latest { display: none; }
+}
 
 .fee-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
 .fee-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }

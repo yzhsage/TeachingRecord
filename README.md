@@ -2,18 +2,22 @@
 
 這是一個供**單一教師帳號使用**的教學紀錄工具，部署於 GitHub Pages，資料保存於 Firebase Realtime Database。系統包含班級與學生管理、課表、點名、成績、收費、備份，以及整合國定假日、校內活動與大考日期的行事曆。
 
+完整的功能清單、日常操作、資料結構、備份、安全、測試、發布與未來工作，請參閱 [功能清單與未來維護指南](docs/TEACHING_RECORD_MAINTENANCE.md)。
+
 ## 目前功能
 
 | 區域 | 功能說明 |
 |---|---|
 | 班級 | 新增、編輯與封存班級，管理學生、學校、課表規則與單次補課 |
 | 點名 | 依上課日期記錄出席、請假、曠課、遲到、早退、延課與假期，並保留備註 |
-| 成績 | 管理平時考與段考欄位，支援分數輸入與班級總覽 |
+| 成績 | 管理平時考與段考欄位；提供平均、中位數、最高／最低、及格率、填寫率、分數分布、各次評量摘要、個別排行、班均差與趨勢圖；段考另支援班排／校排 |
 | 收費 | 記錄應收、已收與收款日期 |
 | 行事曆 | 顯示國定假日、學測／分科測驗／會考與自訂事件；自訂事件支援不連續日期、連續日期區間、適用學校複選、編輯與刪除 |
 | 備份 | 匯出與匯入 JSON；備份包含班級索引、教學資料與手動行事曆事件 |
 
 上方導覽的「行事曆」會開啟月曆。國定假日以不同底色標示；選定日期沒有節日或事件時，下方事件窗格會隱藏。事件清單會顯示事件名稱、適用學校與多日數量。
+
+在班級的「平時考」與「段考」頁面，成績輸入欄會依 90–100、80–89、70–79、60–69、未達 60 顯示色階；畫面同時提供班級 KPI、分布條、各次評量摘要、個別表現排行，以及含最新、變化、班均差、最高、最低與 PR 的學生統計表。色階以 100 分量尺提供直覺提示，非百分制評量請依實際滿分自行換算後解讀。
 
 ## 專案結構
 
@@ -23,10 +27,12 @@
 | `src/AuthGate.jsx` | Firebase Email／Password 登入閘門；目前只接受單一教師帳號 |
 | `src/firebase.js` | Firebase 初始化設定 |
 | `src/calendar.js` | 行事曆事件正規化、日期判斷與連續性判斷 |
+| `src/assessment.js` | 成績數值解析、100 分色帶、分數分布、中位數與前後次變化 |
 | `public/calendar/national-holidays.json` | 由政府辦公日曆資料產生的國定假日資料 |
 | `public/calendar/major-exams.json` | 經官方公告確認的大考日期資料 |
 | `scripts/sync-holidays.mjs` | 下載並轉換官方國定假日資料 |
 | `scripts/calendar.test.mjs` | 行事曆日期、事件與多選學校資料測試 |
+| `scripts/assessment.test.mjs` | 成績色帶、分布比例、中位數與變化量測試 |
 | `.github/workflows/deploy.yml` | GitHub Pages 建置與發布 |
 | `.github/workflows/sync-holidays.yml` | 定期同步官方國定假日資料 |
 | `firebase.rules.json` | 單人模式 Firebase Realtime Database 安全規則 |
@@ -97,7 +103,7 @@ npm test
 npm run build
 ```
 
-`npm test` 會驗證日期區間、不連續日期、事件正規化、多選學校與台灣時區日期；`npm run build` 會產生 `dist/`。`dist/` 與 `node_modules/` 不應提交至 Git。
+`npm test` 會驗證日期區間、不連續日期、事件正規化、多選學校、台灣時區日期，以及成績數值解析、分數色帶、分布比例、中位數與前後次變化；`npm run build` 會產生 `dist/`。`dist/` 與 `node_modules/` 不應提交至 Git。
 
 ## GitHub Pages 部署
 

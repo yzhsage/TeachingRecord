@@ -11,7 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "sync:holidays": "node scripts/sync-holidays.mjs",
-    "test": "node --test scripts/calendar.test.mjs"
+    "test": "node --test scripts/*.test.mjs"
   },
   "dependencies": {
     "firebase": "^11.0.0",
