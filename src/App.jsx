@@ -13,7 +13,7 @@ import { signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
 import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate } from "./assessment";
-import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, hasUnknownAttendanceStatus, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus } from "./attendance";
+import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, findAttendanceAnomalies, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus, wholeDayAttendanceStatus } from "./attendance";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -1476,6 +1476,16 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
   function goToNearestClassDay(direction) {
     setDate(findAdjacentClassDay(cls, date, direction, data));
   }
+  function closeEditor() {
+    setEditingCell(null);
+  }
+  function saveEditing(value) {
+    if (!editingCell) return;
+    saveRecord(editingCell.date, editingCell.studentId, value);
+    closeEditor();
+  }
+  const editingStudent = editingCell ? cls.students.find((student) => student.id === editingCell.studentId) : null;
+  const editingValue = editingCell ? data[editingCell.date]?.records?.[editingCell.studentId] || "" : "";
 
   return (
     <div>
@@ -1488,9 +1498,19 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
       </div>
 
       {viewMode === "overview" ? (
-        <AttendanceOverview cls={cls} data={data} onJump={(d) => { setDate(d); setViewMode("single"); }} onUpdateRecord={saveRecord} />
+        <AttendanceOverview cls={cls} data={data} onJump={(d, studentId) => { setDate(d); setViewMode("single"); setEditingCell(studentId ? { date: d, studentId } : null); }} onUpdateRecord={saveRecord} />
       ) : (
         <>
+          {editingCell && editingStudent && (
+            <AttendanceStatusEditor
+              studentName={`${editingStudent.name} · ${editingCell.date}`}
+              value={editingValue}
+              onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
+              onSave={(value) => saveEditing(value)}
+              onClear={() => saveEditing("")}
+              onCancel={closeEditor}
+            />
+          )}
           <div className="date-nav" style={{ marginTop: 12 }}>
             <IconBtn onClick={() => goToNearestClassDay(-1)} title={atStart ? "已經是第一堂課" : "上一個上課日"} disabled={atStart}><ChevronLeft size={18} /></IconBtn>
             <div className="date-nav-label">
@@ -1610,23 +1630,15 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
   const dateRows = dates.map((date) => {
     const records = data[date].records || {};
     const summary = summarizeAttendanceRecords(records);
-    const flags = [];
-    if (summary.遲到) flags.push(`遲到 ${summary.遲到}`);
-    if (summary.早退) flags.push(`早退 ${summary.早退}`);
-    if (summary.請假) flags.push(`請假 ${summary.請假}`);
-    if (summary.曠課) flags.push(`曠課 ${summary.曠課}`);
-    if ((cls.overrides || []).some((override) => override.date === date && override.action === "cancel")) flags.push("停課日仍有紀錄");
-    const unknownCount = Object.values(records).filter(hasUnknownAttendanceStatus).length;
-    if (unknownCount) flags.push(`未知狀態 ${unknownCount}`);
-    const afterStopCount = cls.students.filter((student) => student.endDate && date > student.endDate && records[student.id]).length;
-    if (afterStopCount) flags.push(`停班後紀錄 ${afterStopCount}`);
-    const beforeJoinCount = cls.students.filter((student) => student.joinDate && date < student.joinDate && records[student.id]).length;
-    if (beforeJoinCount) flags.push(`入班前紀錄 ${beforeJoinCount}`);
-    const orphanCount = Object.keys(records).filter((studentId) => !cls.students.some((student) => student.id === studentId)).length;
-    if (orphanCount) flags.push(`名單外紀錄 ${orphanCount}`);
-    return { date, records, summary, flags };
+    const override = (cls.overrides || []).find((item) => item.date === date);
+    const wholeDayStatus = wholeDayAttendanceStatus(records, {
+      cancelled: override?.action === "cancel",
+      cancelNote: override?.note || "",
+    });
+    const anomalies = findAttendanceAnomalies({ records, students: cls.students, date, wholeDayStatus });
+    return { date, records, summary, anomalies, wholeDayStatus };
   });
-  const anomalyRows = dateRows.filter((row) => row.flags.length > 0);
+  const anomalyRows = dateRows.filter((row) => row.anomalies.length > 0);
   const visibleRows = overviewFilter === "anomaly" ? anomalyRows : dateRows;
   const knownStudentIds = new Set(cls.students.map((student) => student.id));
   const isStudentInClassOnDate = (student, date) => {
@@ -1675,7 +1687,7 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
           <div className="section-hint">出缺勤總覽</div>
           <div className="attendance-overview-title">快速看出席，也找出異常</div>
         </div>
-        <span className="section-hint">點擊矩陣儲存格即可修改</span>
+        <span className="section-hint">底部保留橫向矩陣；點擊異常資料可直接修改</span>
       </div>
       <div className="attendance-metric-grid">
         <AttendanceMetric label="紀錄日期" value={`${dates.length} 天`} detail="已有學生狀態的日期" tone="primary" />
@@ -1705,22 +1717,35 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
 
       <div className="attendance-section-card attendance-timeline-card">
         <div className="attendance-section-heading">
-          <div><div className="score-section-title">異常時間軸</div><span className="section-hint">包含請假、曠課、遲到、早退，以及疑似匯入或停課誤登</span></div>
+          <div><div className="score-section-title">異常時間軸</div><span className="section-hint">只列停課後、入班前、全班延課日的個人紀錄、未知狀態或名單外資料</span></div>
           <select className="filter-select" value={overviewFilter} onChange={(event) => setOverviewFilter(event.target.value)}>
             <option value="all">全部紀錄日</option>
-            <option value="anomaly">只看異常日（{anomalyRows.length}）</option>
+            <option value="anomaly">只看真正異常日（{anomalyRows.length}）</option>
           </select>
         </div>
         {dateRows.length === 0 ? <div className="empty-note">還沒有任何出缺勤紀錄。</div> : (
           <div className="attendance-timeline-list">
-            {visibleRows.slice().reverse().map(({ date, summary, flags }) => (
-              <button type="button" className={"attendance-timeline-row" + (flags.length ? " has-anomaly" : "")} key={date} onClick={() => onJump(date)}>
-                <span className="attendance-timeline-date">{date}<small>{WEEKDAY_FULL[weekdayOf(date)]}</small></span>
-                <span className="attendance-timeline-main"><strong>{summary.recorded} 筆紀錄</strong><span>{flags.length ? flags.join(" · ") : "狀態正常"}</span></span>
+            {visibleRows.slice().reverse().map(({ date, summary, anomalies, wholeDayStatus }) => (
+              <div className={"attendance-timeline-row" + (anomalies.length ? " has-anomaly" : "")} key={date}>
+                <button type="button" className="attendance-timeline-date-button" onClick={() => onJump(date)} title={`開啟 ${date} 單日紀錄`}>
+                  <span className="attendance-timeline-date">{date}<small>{WEEKDAY_FULL[weekdayOf(date)]}</small></span>
+                </button>
+                <div className="attendance-timeline-main">
+                  <strong>{summary.recorded} 筆紀錄</strong>
+                  {anomalies.length ? (
+                    <div className="attendance-anomaly-list">
+                      {anomalies.map((anomaly) => (
+                        <button type="button" className="attendance-anomaly-item" key={`${anomaly.studentId}:${anomaly.reason}`} onClick={() => onJump(date, anomaly.studentId)} title={`直接修改 ${anomaly.studentName} ${date} 的紀錄`}>
+                          <b>{anomaly.studentName}</b><AttendanceStatusChips value={anomaly.value} compact /><span>{anomaly.reason}</span><em>修改 ›</em>
+                        </button>
+                      ))}
+                    </div>
+                  ) : <span>{wholeDayStatus ? `全班${wholeDayStatus}` : "狀態正常"}</span>}
+                </div>
                 <span className="attendance-timeline-arrow">›</span>
-              </button>
+              </div>
             ))}
-            {visibleRows.length === 0 && <div className="empty-note">目前篩選沒有異常日期。</div>}
+            {visibleRows.length === 0 && <div className="empty-note">目前沒有真正異常的日期。</div>}
           </div>
         )}
       </div>
@@ -1738,7 +1763,7 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
 
       {dates.length > 0 && (
         <div className="attendance-section-card attendance-matrix-card">
-          <div className="attendance-section-heading"><div><div className="score-section-title">狀態矩陣</div><span className="section-hint">出席可同時顯示遲到／早退；點擊任一格可直接修改或清除</span></div><span className="section-hint">{overviewFilter === "anomaly" ? `顯示 ${visibleRows.length} / ${dates.length} 天` : `${dates.length} 天`}</span></div>
+          <div className="attendance-section-heading"><div><div className="score-section-title">狀態矩陣</div><span className="section-hint">出席可同時顯示遲到／早退；底部矩陣可左右拖動，點擊任一格可修改或清除</span></div><span className="section-hint">{overviewFilter === "anomaly" ? `顯示 ${visibleRows.length} / ${dates.length} 天` : `${dates.length} 天`}</span></div>
           <div className="matrix-scroll">
             <table className="matrix attendance-matrix">
               <thead><tr><th className="matrix-corner">日期</th>{cls.students.map((student) => <th key={student.id} className="matrix-col-head"><div className="matrix-col-name">{student.name}</div></th>)}</tr></thead>
@@ -3032,15 +3057,23 @@ const CSS = `
 .attendance-mini-bar-row i { display: block; height: 100%; border-radius: inherit; }
 .attendance-mini-bar-row b { color: var(--ink); text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
 .attendance-timeline-list { display: flex; flex-direction: column; gap: 5px; }
-.attendance-timeline-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 18px; align-items: center; gap: 9px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #F8F5EE; color: var(--ink); text-align: left; font-family: inherit; cursor: pointer; }
+.attendance-timeline-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 18px; align-items: start; gap: 9px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #F8F5EE; color: var(--ink); text-align: left; font-family: inherit; }
 .attendance-timeline-row:hover { border-color: var(--brass); background: #FFFDF7; }
 .attendance-timeline-row.has-anomaly { border-left: 3px solid #B8863B; }
+.attendance-timeline-date-button { align-self: stretch; border: 0; padding: 3px 0; background: transparent; color: inherit; text-align: left; font-family: inherit; cursor: pointer; }
+.attendance-timeline-date-button:hover .attendance-timeline-date { color: var(--brass); text-decoration: underline; }
 .attendance-timeline-date { font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
 .attendance-timeline-date small { display: inline-block; margin-left: 4px; color: var(--ink-soft); font-family: 'Noto Sans TC', sans-serif; }
 .attendance-timeline-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; font-size: 11px; }
-.attendance-timeline-main strong { white-space: nowrap; }
-.attendance-timeline-main span { overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; }
-.attendance-timeline-arrow { color: var(--brass); font-size: 18px; text-align: right; }
+.attendance-timeline-main > span { overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; }
+.attendance-timeline-main > strong { white-space: nowrap; }
+.attendance-anomaly-list { display: flex; flex-direction: column; gap: 4px; width: 100%; margin-top: 4px; }
+.attendance-anomaly-item { display: grid; grid-template-columns: minmax(70px, auto) 78px minmax(120px, 1fr) auto; align-items: center; gap: 6px; width: 100%; border: 1px solid #E5D4A9; border-radius: 7px; padding: 5px 7px; background: #FFFDF7; color: var(--ink); text-align: left; font-family: inherit; font-size: 11px; cursor: pointer; }
+.attendance-anomaly-item:hover, .attendance-anomaly-item:focus-visible { border-color: var(--brass); box-shadow: 0 2px 7px rgba(184,134,59,0.14); outline: none; }
+.attendance-anomaly-item b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attendance-anomaly-item > span { overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; }
+.attendance-anomaly-item em { color: var(--brass); font-style: normal; font-weight: 700; white-space: nowrap; }
+.attendance-timeline-arrow { padding-top: 3px; color: var(--brass); font-size: 18px; text-align: right; }
 .attendance-editable-cell { padding: 3px !important; }
 .attendance-cell-button { display: flex; align-items: center; justify-content: center; min-height: 28px; width: 100%; min-width: 54px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-family: inherit; }
 .attendance-cell-button:hover, .attendance-cell-button:focus-visible { border-color: var(--brass); background: #FFFDF7; outline: none; }
@@ -3138,7 +3171,10 @@ const CSS = `
   .attendance-metric:first-child { grid-column: span 2; }
   .attendance-timeline-row { grid-template-columns: 84px minmax(0, 1fr) 14px; gap: 6px; }
   .attendance-timeline-main { display: block; }
-  .attendance-timeline-main span { display: block; margin-top: 2px; }
+  .attendance-timeline-main > span { display: block; margin-top: 2px; }
+  .attendance-anomaly-item { grid-template-columns: minmax(70px, 1fr) auto; }
+  .attendance-anomaly-item > span { grid-column: 1; }
+  .attendance-anomaly-item em { grid-column: 2; grid-row: 1 / span 2; }
   .attendance-editor-actions { grid-template-columns: auto 1fr auto auto; }
   .score-dashboard-heading { flex-direction: column; gap: 2px; }
   .score-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -61,6 +61,35 @@ export function toggleAttendanceStatus(value, status) {
   return ["出席", ...modifiers];
 }
 
+export function wholeDayAttendanceStatus(records, { cancelled = false, cancelNote = "" } = {}) {
+  if (cancelled) return cancelNote === "假期" ? "假期" : "延課";
+  const bases = Object.values(records || {}).map(attendanceBaseStatus).filter(Boolean);
+  if (!bases.length || !bases.every((status) => status === bases[0] && (status === "延課" || status === "假期"))) return null;
+  return bases[0];
+}
+
+export function attendanceAnomalyReason({ student, studentId, date, value, knownStudent = true, wholeDayStatus = null }) {
+  if (!knownStudent) return "名單外紀錄";
+  const tokens = rawStatusTokens(value);
+  if (tokens.length && tokens.some((token) => !ATTENDANCE_STATUSES.includes(token))) return "未知狀態";
+  if (!tokens.length) return null;
+  if (student?.joinDate && date < student.joinDate) return "入班前仍有紀錄";
+  const stopped = student && ((student.endDate && date > student.endDate) || ((student.membership === "stopped" || student.active === false) && (!student.endDate || date > student.endDate)));
+  if (stopped) return "停課後仍有紀錄";
+  if (wholeDayStatus && attendanceBaseStatus(value) !== wholeDayStatus) return `全班${wholeDayStatus}日個人紀錄`;
+  return null;
+}
+
+export function findAttendanceAnomalies({ records, students, date, wholeDayStatus = null } = {}) {
+  const studentMap = new Map((students || []).map((student) => [student.id, student]));
+  return Object.entries(records || {}).flatMap(([studentId, value]) => {
+    const student = studentMap.get(studentId);
+    const reason = attendanceAnomalyReason({ student, studentId, date, value, knownStudent: !!student, wholeDayStatus });
+    if (!reason) return [];
+    return [{ studentId, studentName: student?.name || studentId, statuses: normalizeAttendanceStatus(value), value, reason }];
+  });
+}
+
 export function summarizeAttendanceRecords(records) {
   const summary = {
     recorded: 0,
