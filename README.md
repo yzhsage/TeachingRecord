@@ -9,7 +9,7 @@
 | 區域 | 功能說明 |
 |---|---|
 | 班級 | 新增、編輯與封存班級，管理學生、學校、課表規則與單次補課 |
-| 點名 | 依上課日期記錄出席、請假、曠課、遲到、早退、延課與假期，並保留備註 |
+| 點名 | 依上課日期記錄出席、請假、曠課、遲到、早退、延課與假期；出席可同時加選遲到／早退，並保留備註；總覽提供儀表板、學生行為分析、異常時間軸與可直接修改的色彩矩陣 |
 | 成績 | 管理平時考與段考欄位；提供平均、中位數、最高／最低、及格率、填寫率、分數分布、各次評量摘要、個別排行、班均差與趨勢圖；段考另支援班排／校排 |
 | 收費 | 記錄應收、已收與收款日期 |
 | 行事曆 | 顯示國定假日、學測／分科測驗／會考與自訂事件；自訂事件支援不連續日期、連續日期區間、適用學校複選、編輯與刪除 |
@@ -23,15 +23,17 @@
 
 | 路徑 | 用途 |
 |---|---|
-| `src/App.jsx` | 主要畫面、班級流程、行事曆與資料操作 |
+| `src/App.jsx` | 主要畫面、班級流程、行事曆、出缺勤、成績與資料操作 |
 | `src/AuthGate.jsx` | Firebase Email／Password 登入閘門；目前只接受單一教師帳號 |
 | `src/firebase.js` | Firebase 初始化設定 |
 | `src/calendar.js` | 行事曆事件正規化、日期判斷與連續性判斷 |
+| `src/attendance.js` | 出缺勤複選狀態正規化、舊資料相容與總覽統計 |
 | `src/assessment.js` | 成績數值解析、100 分色帶、分數分布、中位數與前後次變化 |
 | `public/calendar/national-holidays.json` | 由政府辦公日曆資料產生的國定假日資料 |
 | `public/calendar/major-exams.json` | 經官方公告確認的大考日期資料 |
 | `scripts/sync-holidays.mjs` | 下載並轉換官方國定假日資料 |
 | `scripts/calendar.test.mjs` | 行事曆日期、事件與多選學校資料測試 |
+| `scripts/attendance.test.mjs` | 出缺勤舊字串、複選互斥規則與總覽統計測試 |
 | `scripts/assessment.test.mjs` | 成績色帶、分布比例、中位數與變化量測試 |
 | `.github/workflows/deploy.yml` | GitHub Pages 建置與發布 |
 | `.github/workflows/sync-holidays.yml` | 定期同步官方國定假日資料 |

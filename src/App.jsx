@@ -13,13 +13,14 @@ import { signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
 import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate } from "./assessment";
+import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, hasUnknownAttendanceStatus, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus } from "./attendance";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
 const WEEKDAY_FULL = ["日", "一", "二", "三", "四", "五", "六"];
-const STATUS_LIST = ["出席", "請假", "曠課", "遲到", "早退", "延課", "假期"];
+const STATUS_LIST = ATTENDANCE_STATUSES;
 const STATUS_STYLE = {
   出席: { bg: "#EAF3EC", fg: "#3F7D5C", bd: "#BFDCC9", short: "出" },
   請假: { bg: "#FBF3DE", fg: "#A87B14", bd: "#EFDBA0", short: "假" },
@@ -29,8 +30,6 @@ const STATUS_STYLE = {
   延課: { bg: "#EEEEEC", fg: "#71757A", bd: "#D9D9D5", short: "延" },
   假期: { bg: "#E6F1F3", fg: "#2E7D8C", bd: "#BFE0E5", short: "假期" },
 };
-/* statuses that count against attendance for rate calculations */
-const RATE_STATUSES = ["出席", "請假", "曠課", "遲到", "早退"];
 /* Trial students are promoted to regular membership starting with
    their 3rd recorded session (first 2 are the trial period). */
 const TRIAL_SESSION_COUNT = 2;
@@ -1321,12 +1320,66 @@ function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, 
 /* Attendance tab                                                       */
 /* ------------------------------------------------------------------ */
 
+function AttendanceStatusChips({ value, compact = false }) {
+  const statuses = normalizeAttendanceStatus(value);
+  if (!statuses.length) return <span className="status-empty">—</span>;
+  return (
+    <span className={"status-chip-list" + (compact ? " status-chip-list-compact" : "")}>
+      {statuses.map((status) => {
+        const style = STATUS_STYLE[status];
+        return <span key={status} className="status-chip" style={{ background: style?.bg || "#EEEEEC", color: style?.fg || "#71757A", borderColor: style?.bd || "#D9D9D5" }}>{style?.short || status}</span>;
+      })}
+    </span>
+  );
+}
+
+function AttendanceStatusEditor({ studentName, value, onChange, onSave, onClear, onCancel }) {
+  const statuses = normalizeAttendanceStatus(value);
+  return (
+    <div className="attendance-editor-panel" role="dialog" aria-label={`${studentName}出缺勤紀錄編輯`}>
+      <div className="attendance-editor-heading">
+        <div><strong>{studentName}</strong><span>修改這一天的出缺勤狀態</span></div>
+        <button type="button" className="icon-btn" onClick={onCancel} title="關閉編輯"><X size={15} /></button>
+      </div>
+      <div className="attendance-editor-options">
+        {ATTENDANCE_STATUSES.map((status) => {
+          const isModifier = ATTENDANCE_MODIFIER_STATUSES.includes(status);
+          const active = statuses.includes(status);
+          const disabled = isModifier && !statuses.includes("出席");
+          const style = STATUS_STYLE[status];
+          return (
+            <button
+              type="button"
+              key={status}
+              className={"attendance-editor-status" + (active ? " is-active" : "")}
+              style={active ? { background: style.bg, color: style.fg, borderColor: style.bd } : {}}
+              disabled={disabled}
+              onClick={() => onChange(toggleAttendanceStatus(statuses, status))}
+              title={disabled ? "只有出席時可以選遲到或早退" : `${active ? "取消" : "選擇"}${status}`}
+            >
+              {isModifier ? "＋" : ""}{status}
+            </button>
+          );
+        })}
+      </div>
+      <div className="attendance-editor-hint">基礎狀態擇一；遲到、早退只有在出席時可同時勾選。</div>
+      <div className="form-actions attendance-editor-actions">
+        <button type="button" className="btn-ghost btn-xs" onClick={onClear}>清除紀錄</button>
+        <span />
+        <button type="button" className="btn-ghost btn-xs" onClick={onCancel}>取消</button>
+        <button type="button" className="btn-primary btn-sm" onClick={() => onSave(serializeAttendanceStatus(statuses))}>儲存</button>
+      </div>
+    </div>
+  );
+}
+
 function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [addTime, setAddTime] = useState("");
   const [viewMode, setViewMode] = useState("single");
+  const [editingCell, setEditingCell] = useState(null);
   const storageKeyName = `attendance:${cls.id}`;
   const [data, setData, ready] = useCachedStore(storageKeyName, {});
 
@@ -1345,6 +1398,19 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
       return { ...prev, [date]: updater(base) };
     });
   }
+  function saveRecord(dateStr, studentId, value) {
+    setData((prev) => {
+      const currentDay = { note: "", content: "", records: {}, ...(prev[dateStr] || {}) };
+      const records = { ...(currentDay.records || {}) };
+      if (value === "" || (Array.isArray(value) && value.length === 0)) delete records[studentId];
+      else records[studentId] = value;
+      const nextDay = { ...currentDay, records };
+      const next = { ...prev };
+      if (!nextDay.note && !nextDay.content && Object.keys(records).length === 0) delete next[dateStr];
+      else next[dateStr] = nextDay;
+      return next;
+    });
+  }
   function setStatusFor(studentId, value) {
     const wholeDayStatus = value === "延課" || value === "假期";
     if (wholeDayStatus) {
@@ -1361,7 +1427,8 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
       });
       return;
     }
-    setDay((d) => ({ ...d, records: { ...d.records, [studentId]: value } }));
+    const nextStatuses = value ? toggleAttendanceStatus(dayData.records[studentId], value) : [];
+    saveRecord(date, studentId, serializeAttendanceStatus(nextStatuses));
     // if this date was auto-cancelled by a whole-day status, clear that
     // override now that someone has a normal, real attendance status.
     onUpdateClass((c) => {
@@ -1421,7 +1488,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
       </div>
 
       {viewMode === "overview" ? (
-        <AttendanceOverview cls={cls} data={data} onJump={(d) => { setDate(d); setViewMode("single"); }} />
+        <AttendanceOverview cls={cls} data={data} onJump={(d) => { setDate(d); setViewMode("single"); }} onUpdateRecord={saveRecord} />
       ) : (
         <>
           <div className="date-nav" style={{ marginTop: 12 }}>
@@ -1493,16 +1560,20 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
                     </div>
                     <div className="status-group">
                       {STATUS_LIST.map((st) => {
-                        const active = val === st;
+                        const active = attendanceHasStatus(val, st);
+                        const isModifier = ATTENDANCE_MODIFIER_STATUSES.includes(st);
+                        const disabled = isModifier && !attendanceHasStatus(val, "出席");
                         const style = STATUS_STYLE[st];
                         return (
                           <button
                             key={st}
-                            className={"status-btn" + (active ? " status-btn-active" : "")}
+                            className={"status-btn" + (active ? " status-btn-active" : "") + (disabled ? " status-btn-disabled" : "")}
                             style={active ? { background: style.bg, color: style.fg, borderColor: style.bd } : {}}
-                            onClick={() => setStatusFor(s.id, active ? "" : st)}
+                            disabled={disabled}
+                            onClick={() => setStatusFor(s.id, st)}
+                            title={disabled ? "只有出席時可以選遲到或早退" : `${active ? "取消" : "選擇"}${st}`}
                           >
-                            {st}
+                            {isModifier ? "＋" : ""}{st}
                           </button>
                         );
                       })}
@@ -1522,76 +1593,169 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
 /* Overview: a date x student grid (like the original spreadsheet) so
    absence/lateness patterns are visible at a glance, plus per-student
    attendance-rate stats. */
-function AttendanceOverview({ cls, data, onJump }) {
+function AttendanceMetric({ label, value, detail, tone }) {
+  return (
+    <div className={"attendance-metric" + (tone ? ` attendance-metric-${tone}` : "")}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
+  const [overviewFilter, setOverviewFilter] = useState("all");
+  const [editingCell, setEditingCell] = useState(null);
   const dates = Object.keys(data).filter((d) => Object.keys(data[d].records || {}).length > 0).sort();
-
-  const counts = {};
-  cls.students.forEach((s) => { counts[s.id] = {}; });
-  dates.forEach((d) => {
-    Object.entries(data[d].records || {}).forEach(([sid, st]) => {
-      if (!counts[sid]) counts[sid] = {};
-      counts[sid][st] = (counts[sid][st] || 0) + 1;
-    });
+  const dateRows = dates.map((date) => {
+    const records = data[date].records || {};
+    const summary = summarizeAttendanceRecords(records);
+    const flags = [];
+    if (summary.遲到) flags.push(`遲到 ${summary.遲到}`);
+    if (summary.早退) flags.push(`早退 ${summary.早退}`);
+    if (summary.請假) flags.push(`請假 ${summary.請假}`);
+    if (summary.曠課) flags.push(`曠課 ${summary.曠課}`);
+    if ((cls.overrides || []).some((override) => override.date === date && override.action === "cancel")) flags.push("停課日仍有紀錄");
+    const unknownCount = Object.values(records).filter(hasUnknownAttendanceStatus).length;
+    if (unknownCount) flags.push(`未知狀態 ${unknownCount}`);
+    const afterStopCount = cls.students.filter((student) => student.endDate && date > student.endDate && records[student.id]).length;
+    if (afterStopCount) flags.push(`停班後紀錄 ${afterStopCount}`);
+    const beforeJoinCount = cls.students.filter((student) => student.joinDate && date < student.joinDate && records[student.id]).length;
+    if (beforeJoinCount) flags.push(`入班前紀錄 ${beforeJoinCount}`);
+    const orphanCount = Object.keys(records).filter((studentId) => !cls.students.some((student) => student.id === studentId)).length;
+    if (orphanCount) flags.push(`名單外紀錄 ${orphanCount}`);
+    return { date, records, summary, flags };
   });
+  const anomalyRows = dateRows.filter((row) => row.flags.length > 0);
+  const visibleRows = overviewFilter === "anomaly" ? anomalyRows : dateRows;
+  const knownStudentIds = new Set(cls.students.map((student) => student.id));
+  const isStudentInClassOnDate = (student, date) => {
+    const membership = membershipAtDate(student, date, data);
+    return membership !== "stopped" && membership !== "not_yet";
+  };
+  const allEntries = dateRows.flatMap(({ date, records }) => Object.entries(records)
+    .filter(([studentId]) => knownStudentIds.has(studentId) && isStudentInClassOnDate(cls.students.find((student) => student.id === studentId), date))
+    .map(([studentId, value]) => [`${date}:${studentId}`, value]));
+  const overall = summarizeAttendanceRecords(Object.fromEntries(allEntries));
+  const studentStats = cls.students.map((student) => {
+    const entries = dateRows
+      .filter(({ date }) => isStudentInClassOnDate(student, date))
+      .map(({ date, records }) => [date, records[student.id]])
+      .filter(([, value]) => value !== undefined && value !== "");
+    const summary = summarizeAttendanceRecords(Object.fromEntries(entries));
+    const attendanceRate = summary.countedSessions ? Math.round((summary.出席 / summary.countedSessions) * 1000) / 10 : null;
+    return { student, ...summary, attendanceRate };
+  });
+  const totalCountedSessions = studentStats.reduce((total, stat) => total + stat.countedSessions, 0);
+  const attendanceRate = totalCountedSessions ? Math.round((overall.出席 / totalCountedSessions) * 1000) / 10 : null;
+  const maxStudentEvents = Math.max(1, ...studentStats.map((stat) => Math.max(stat.遲到, stat.早退, stat.請假, stat.曠課, 0)));
 
-  function rate(sid, st) {
-    const c = counts[sid] || {};
-    const total = RATE_STATUSES.reduce((sum, k) => sum + (c[k] || 0), 0);
-    if (!total) return null;
-    return Math.round(((c[st] || 0) / total) * 1000) / 10;
+  function openCell(date, studentId) {
+    setEditingCell({ date, studentId });
+  }
+  function closeEditor() {
+    setEditingCell(null);
+  }
+  function updateCell(value) {
+    if (!editingCell) return;
+    onUpdateRecord(editingCell.date, editingCell.studentId, value);
+    closeEditor();
   }
 
   if (cls.students.length === 0) {
     return <div className="empty-note" style={{ marginTop: 12 }}>尚未新增學生，請至「學生與課表」分頁新增。</div>;
   }
 
+  const editingStudent = editingCell ? cls.students.find((student) => student.id === editingCell.studentId) : null;
+  const editingValue = editingCell ? (editingCell.draftValue ?? data[editingCell.date]?.records?.[editingCell.studentId] ?? "") : "";
   return (
-    <div>
-      <div className="stats-panel" style={{ marginTop: 12 }}>
-        <div className="stats-table stats-table-scroll">
-          <div className="stats-table-row-rate stats-table-head">
-            <span>學生</span><span>出席率</span><span>請假率</span><span>曠課率</span><span>遲到率</span>
-          </div>
-          {cls.students.map((s) => (
-            <div className="stats-table-row-rate" key={s.id}>
-              <span>{s.name}</span>
-              <span>{rate(s.id, "出席") ?? "—"}{rate(s.id, "出席") !== null ? "%" : ""}</span>
-              <span>{rate(s.id, "請假") ?? "—"}{rate(s.id, "請假") !== null ? "%" : ""}</span>
-              <span>{rate(s.id, "曠課") ?? "—"}{rate(s.id, "曠課") !== null ? "%" : ""}</span>
-              <span>{rate(s.id, "遲到") ?? "—"}{rate(s.id, "遲到") !== null ? "%" : ""}</span>
+    <div className="attendance-overview">
+      <div className="attendance-overview-heading">
+        <div>
+          <div className="section-hint">出缺勤總覽</div>
+          <div className="attendance-overview-title">快速看出席，也找出異常</div>
+        </div>
+        <span className="section-hint">點擊矩陣儲存格即可修改</span>
+      </div>
+      <div className="attendance-metric-grid">
+        <AttendanceMetric label="紀錄日期" value={`${dates.length} 天`} detail="已有學生狀態的日期" tone="primary" />
+        <AttendanceMetric label="出席率" value={attendanceRate === null ? "—" : `${attendanceRate}%`} detail="出席／有效課次" tone="positive" />
+        <AttendanceMetric label="遲到" value={`${overall.遲到} 次`} detail="可與出席並存" tone={overall.遲到 ? "warning" : "positive"} />
+        <AttendanceMetric label="早退" value={`${overall.早退} 次`} detail="可與出席並存" tone={overall.早退 ? "warning" : "positive"} />
+        <AttendanceMetric label="請假／曠課" value={`${overall.請假} / ${overall.曠課}`} detail="學生日次" tone={overall.曠課 ? "danger" : ""} />
+        <AttendanceMetric label="待檢視異常日" value={`${anomalyRows.length} 天`} detail="可從時間軸跳轉" tone={anomalyRows.length ? "warning" : "positive"} />
+      </div>
+
+      <div className="attendance-section-card">
+        <div className="attendance-section-heading"><div className="score-section-title">學生行為分析</div><span className="section-hint">比例分母為各學生有記錄的有效課次</span></div>
+        <div className="attendance-student-grid">
+          {studentStats.map((stat) => (
+            <div className="attendance-student-card" key={stat.student.id}>
+              <div className="attendance-student-card-head"><strong>{stat.student.name}</strong><span>{stat.countedSessions} 有效課次</span></div>
+              <div className="attendance-student-rate">出席率 <b>{stat.attendanceRate === null ? "—" : `${stat.attendanceRate}%`}</b></div>
+              <div className="attendance-mini-bars">
+                {[{ key: "遲到", color: "#4C6C99" }, { key: "早退", color: "#7A5EA8" }, { key: "請假", color: "#B8863B" }, { key: "曠課", color: "#B23A34" }].map(({ key, color }) => (
+                  <div className="attendance-mini-bar-row" key={key}><span>{key}</span><div><i style={{ width: `${(stat[key] / maxStudentEvents) * 100}%`, background: color }} /></div><b>{stat[key]}</b></div>
+                ))}
+              </div>
             </div>
           ))}
         </div>
       </div>
 
-      {dates.length === 0 ? (
-        <div className="empty-note">還沒有任何出缺勤紀錄。</div>
-      ) : (
-        <div className="matrix-scroll">
-          <table className="matrix">
-            <thead>
-              <tr>
-                <th className="matrix-corner">日期</th>
-                {cls.students.map((s) => <th key={s.id} className="matrix-col-head"><div className="matrix-col-name">{s.name}</div></th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {dates.map((d) => (
-                <tr key={d}>
-                  <td className="matrix-row-head matrix-row-head-clickable" onClick={() => onJump(d)}>{d}</td>
-                  {cls.students.map((s) => {
-                    const st = (data[d].records || {})[s.id];
-                    const style = st ? STATUS_STYLE[st] : null;
-                    return (
-                      <td key={s.id} className="matrix-cell">
-                        {st ? <span className="status-chip" style={{ background: style ? style.bg : "#EEEEEC", color: style ? style.fg : "#71757A" }}>{style ? style.short : st.slice(0, 2)}</span> : ""}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="attendance-section-card attendance-timeline-card">
+        <div className="attendance-section-heading">
+          <div><div className="score-section-title">異常時間軸</div><span className="section-hint">包含請假、曠課、遲到、早退，以及疑似匯入或停課誤登</span></div>
+          <select className="filter-select" value={overviewFilter} onChange={(event) => setOverviewFilter(event.target.value)}>
+            <option value="all">全部紀錄日</option>
+            <option value="anomaly">只看異常日（{anomalyRows.length}）</option>
+          </select>
+        </div>
+        {dateRows.length === 0 ? <div className="empty-note">還沒有任何出缺勤紀錄。</div> : (
+          <div className="attendance-timeline-list">
+            {visibleRows.slice().reverse().map(({ date, summary, flags }) => (
+              <button type="button" className={"attendance-timeline-row" + (flags.length ? " has-anomaly" : "")} key={date} onClick={() => onJump(date)}>
+                <span className="attendance-timeline-date">{date}<small>{WEEKDAY_FULL[weekdayOf(date)]}</small></span>
+                <span className="attendance-timeline-main"><strong>{summary.recorded} 筆紀錄</strong><span>{flags.length ? flags.join(" · ") : "狀態正常"}</span></span>
+                <span className="attendance-timeline-arrow">›</span>
+              </button>
+            ))}
+            {visibleRows.length === 0 && <div className="empty-note">目前篩選沒有異常日期。</div>}
+          </div>
+        )}
+      </div>
+
+      {editingCell && editingStudent && (
+        <AttendanceStatusEditor
+          studentName={`${editingStudent.name} · ${editingCell.date}`}
+          value={editingValue}
+          onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
+          onSave={() => updateCell(editingValue)}
+          onClear={() => updateCell("")}
+          onCancel={closeEditor}
+        />
+      )}
+
+      {dates.length > 0 && (
+        <div className="attendance-section-card attendance-matrix-card">
+          <div className="attendance-section-heading"><div><div className="score-section-title">狀態矩陣</div><span className="section-hint">出席可同時顯示遲到／早退；點擊任一格可直接修改或清除</span></div><span className="section-hint">{overviewFilter === "anomaly" ? `顯示 ${visibleRows.length} / ${dates.length} 天` : `${dates.length} 天`}</span></div>
+          <div className="matrix-scroll">
+            <table className="matrix attendance-matrix">
+              <thead><tr><th className="matrix-corner">日期</th>{cls.students.map((student) => <th key={student.id} className="matrix-col-head"><div className="matrix-col-name">{student.name}</div></th>)}</tr></thead>
+              <tbody>
+                {visibleRows.map(({ date, records }) => (
+                  <tr key={date}>
+                    <td className="matrix-row-head matrix-row-head-clickable" onClick={() => onJump(date)}>{date}</td>
+                    {cls.students.map((student) => {
+                      const value = records[student.id];
+                      const statuses = normalizeAttendanceStatus(value);
+                      return <td key={student.id} className="matrix-cell attendance-editable-cell"><button type="button" className="attendance-cell-button" onClick={() => openCell(date, student.id)} title={`修改 ${student.name} ${date} 的紀錄`}><AttendanceStatusChips value={statuses} compact /></button></td>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
@@ -2814,6 +2978,7 @@ const CSS = `
 .roll-name { min-width: 74px; font-size: 13px; font-weight: 500; }
 .roll-school { font-size: 11px; color: var(--ink-soft); font-weight: 400; }
 .status-group { display: flex; flex-wrap: wrap; gap: 5px; flex: 1; }
+.status-btn-disabled { opacity: 0.42; cursor: not-allowed; }
 .status-btn { border: 1px solid var(--line); background: white; color: var(--ink-soft); border-radius: 7px; padding: 5px 9px; font-size: 12px; cursor: pointer; font-family: inherit; }
 .status-btn-active { font-weight: 700; }
 
@@ -2837,7 +3002,59 @@ const CSS = `
 .stats-table-scroll { overflow-x: auto; max-width: 100%; }
 .icon-btn:disabled { opacity: 0.35; cursor: default; }
 .journal-textarea { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit; resize: vertical; background: white; color: var(--ink); }
-.status-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px; font-size: 10.5px; font-weight: 700; }
+.status-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 4px; border: 1px solid transparent; border-radius: 5px; font-size: 10.5px; font-weight: 700; }
+.status-chip-list { display: inline-flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 2px; }
+.status-chip-list-compact { max-width: 76px; }
+.status-empty { color: #B4B5B0; font-size: 12px; }
+.attendance-overview { margin-top: 12px; }
+.attendance-overview-heading, .attendance-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.attendance-overview-title { margin-top: 2px; font-size: 15px; font-weight: 700; }
+.attendance-metric-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }
+.attendance-metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: #F8F5EE; }
+.attendance-metric-primary { background: var(--ink); border-color: var(--ink); color: white; }
+.attendance-metric-positive { background: #EAF3EC; border-color: #BFDCC9; }
+.attendance-metric-warning { background: #FBF3DE; border-color: #EFDBA0; }
+.attendance-metric-danger { background: #FBEAE9; border-color: #F0C6C3; }
+.attendance-metric > span, .attendance-metric > small { display: block; color: var(--ink-soft); font-size: 10.5px; }
+.attendance-metric-primary > span, .attendance-metric-primary > small { color: rgba(255,255,255,0.72); }
+.attendance-metric > strong { display: block; margin: 4px 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'IBM Plex Mono', monospace; font-size: 17px; }
+.attendance-section-card { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.attendance-student-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.attendance-student-card { min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: #F8F5EE; }
+.attendance-student-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; }
+.attendance-student-card-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attendance-student-card-head span, .attendance-student-rate { color: var(--ink-soft); font-size: 10px; }
+.attendance-student-rate { margin-top: 7px; }
+.attendance-student-rate b { float: right; color: var(--ink); font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+.attendance-mini-bars { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.attendance-mini-bar-row { display: grid; grid-template-columns: 30px minmax(30px, 1fr) 20px; align-items: center; gap: 5px; color: var(--ink-soft); font-size: 10px; }
+.attendance-mini-bar-row > div { height: 5px; overflow: hidden; border-radius: 999px; background: #E7E5DE; }
+.attendance-mini-bar-row i { display: block; height: 100%; border-radius: inherit; }
+.attendance-mini-bar-row b { color: var(--ink); text-align: right; font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
+.attendance-timeline-list { display: flex; flex-direction: column; gap: 5px; }
+.attendance-timeline-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) 18px; align-items: center; gap: 9px; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: #F8F5EE; color: var(--ink); text-align: left; font-family: inherit; cursor: pointer; }
+.attendance-timeline-row:hover { border-color: var(--brass); background: #FFFDF7; }
+.attendance-timeline-row.has-anomaly { border-left: 3px solid #B8863B; }
+.attendance-timeline-date { font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+.attendance-timeline-date small { display: inline-block; margin-left: 4px; color: var(--ink-soft); font-family: 'Noto Sans TC', sans-serif; }
+.attendance-timeline-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; font-size: 11px; }
+.attendance-timeline-main strong { white-space: nowrap; }
+.attendance-timeline-main span { overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; }
+.attendance-timeline-arrow { color: var(--brass); font-size: 18px; text-align: right; }
+.attendance-editable-cell { padding: 3px !important; }
+.attendance-cell-button { display: flex; align-items: center; justify-content: center; min-height: 28px; width: 100%; min-width: 54px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-family: inherit; }
+.attendance-cell-button:hover, .attendance-cell-button:focus-visible { border-color: var(--brass); background: #FFFDF7; outline: none; }
+.attendance-matrix .matrix-col-head { min-width: 92px; }
+.attendance-editor-panel { margin-top: 12px; padding: 12px; border: 1px solid var(--brass); border-radius: 12px; background: #FFFDF7; box-shadow: 0 8px 24px rgba(33,38,43,0.08); }
+.attendance-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.attendance-editor-heading strong, .attendance-editor-heading span { display: block; }
+.attendance-editor-heading span { margin-top: 2px; color: var(--ink-soft); font-size: 11px; }
+.attendance-editor-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.attendance-editor-status { border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; background: white; color: var(--ink-soft); font-family: inherit; font-size: 12px; cursor: pointer; }
+.attendance-editor-status:hover:not(:disabled) { border-color: var(--brass); }
+.attendance-editor-status:disabled { opacity: 0.42; cursor: not-allowed; }
+.attendance-editor-hint { margin-top: 8px; color: var(--ink-soft); font-size: 10.5px; }
+.attendance-editor-actions { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 6px; margin-top: 10px; }
 .matrix-row-head-clickable { cursor: pointer; }
 .matrix-row-head-clickable:hover { text-decoration: underline; }
 
@@ -2916,6 +3133,13 @@ const CSS = `
 .matrix-input-sub { margin-top: 4px; font-size: 11px; color: var(--ink-soft); }
 
 @media (max-width: 720px) {
+  .attendance-overview-heading, .attendance-section-heading { flex-direction: column; gap: 4px; }
+  .attendance-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .attendance-metric:first-child { grid-column: span 2; }
+  .attendance-timeline-row { grid-template-columns: 84px minmax(0, 1fr) 14px; gap: 6px; }
+  .attendance-timeline-main { display: block; }
+  .attendance-timeline-main span { display: block; margin-top: 2px; }
+  .attendance-editor-actions { grid-template-columns: auto 1fr auto auto; }
   .score-dashboard-heading { flex-direction: column; gap: 2px; }
   .score-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .score-metric:first-child { grid-column: span 2; }
