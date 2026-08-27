@@ -66,11 +66,11 @@ test("student enrollment uses the assessment date rather than today's roster", (
   ];
 
   assert.equal(isStudentEnrolledOnDate(students[1], "2026-08-31"), false);
-  assert.equal(isStudentEnrolledOnDate(students[2], "2026-08-15"), true);
-  assert.equal(isStudentEnrolledOnDate(students[2], "2026-08-16"), false);
+  assert.equal(isStudentEnrolledOnDate(students[2], "2026-08-14"), true);
+  assert.equal(isStudentEnrolledOnDate(students[2], "2026-08-15"), false);
   assert.equal(isStudentEnrolledOnDate(students[3], "2026-08-01"), false);
   assert.equal(isStudentEnrolledOnDate(students[4], "2026-08-01"), false);
-  assert.deepEqual(studentsEnrolledOnDate(students, "2026-08-15").map((student) => student.id), ["active", "left"]);
+  assert.deepEqual(studentsEnrolledOnDate(students, "2026-08-15").map((student) => student.id), ["active"]);
   assert.deepEqual(studentsEnrolledOnDate(students, "").map((student) => student.id), students.map((student) => student.id));
 });
 

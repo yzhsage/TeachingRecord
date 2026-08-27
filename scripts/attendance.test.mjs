@@ -51,6 +51,14 @@ test("ordinary absence, late, and early leave are not anomalous", () => {
   assert.deepEqual(findAttendanceAnomalies({ records: { a: "曠課" }, students, date: "2026-08-05" }), []);
 });
 
+test("the stop date begins the stopped period and later records are anomalous", () => {
+  const students = [{ id: "wu", name: "吳亭儀", endDate: "2026-06-29" }];
+  assert.deepEqual(findAttendanceAnomalies({ records: { wu: "出席" }, students, date: "2026-06-28" }), []);
+  const expected = [{ studentId: "wu", studentName: "吳亭儀", statuses: ["出席"], value: "出席", reason: "停課後仍有紀錄" }];
+  assert.deepEqual(findAttendanceAnomalies({ records: { wu: "出席" }, students, date: "2026-06-29" }), expected);
+  assert.deepEqual(findAttendanceAnomalies({ records: { wu: "出席" }, students, date: "2026-06-30" }), expected);
+});
+
 test("stopped, pre-join, unknown, and orphan records are identified by student", () => {
   const students = [
     { id: "stopped", name: "停課生", endDate: "2026-08-05" },

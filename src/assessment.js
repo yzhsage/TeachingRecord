@@ -48,15 +48,15 @@ export function median(values) {
 
 /**
  * Return whether a student should be counted as enrolled on an assessment date.
- * joinDate is inclusive and endDate is the last date the student attended;
+ * joinDate is inclusive and endDate is the first date the student no longer attends;
  * legacy stopped/active flags without an endDate remain stopped for all dates.
  */
+import { isStudentStoppedOnDate } from "./students.js";
+
 export function isStudentEnrolledOnDate(student, dateStr) {
   if (!student || !dateStr) return true;
   if (student.joinDate && dateStr < student.joinDate) return false;
-  if (student.endDate && dateStr > student.endDate) return false;
-  if (student.membership === "stopped" || student.active === false) return Boolean(student.endDate) && dateStr <= student.endDate;
-  return true;
+  return !isStudentStoppedOnDate(student, dateStr);
 }
 
 export function studentsEnrolledOnDate(students, dateStr) {

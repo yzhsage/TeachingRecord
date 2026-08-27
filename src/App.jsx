@@ -14,6 +14,7 @@ import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
 import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate } from "./assessment";
 import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, findAttendanceAnomalies, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus, wholeDayAttendanceStatus } from "./attendance";
+import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, validateStudentIndex } from "./students";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -272,15 +273,15 @@ function dedupeById(arr) {
    looking at (e.g. viewing last month shouldn't show today's status).
      - joinDate: first date they can appear at all (unset = no floor,
        for pre-existing/imported rosters that predate this feature)
-     - endDate: last date they attended (set when marked 停班)
+     - endDate: first date the student is no longer expected to attend (set when marked 停班)
+     - resumeDate: first date they return after a previous stop, if any
      - forceActive / forceTrial: manual overrides, for when the
        tutor wants to skip or extend the automatic trial period
    Legacy fields (isTrial, active:false, membership) from earlier
-   versions are still honored for data created before this change. */
+   versions are still honored for data created before this change. A resumeDate
+   takes precedence from that date onward without erasing the prior endDate. */
 function isStoppedAt(student, dateStr) {
-  if (student.endDate && dateStr > student.endDate) return true;
-  if (student.membership === "stopped" || student.active === false) return !student.endDate || dateStr > student.endDate;
-  return false;
+  return isStudentStoppedOnDate(student, dateStr);
 }
 function membershipAtDate(student, dateStr, attendanceData) {
   if (student.joinDate && dateStr < student.joinDate) return "not_yet";
@@ -343,6 +344,7 @@ function validateStoreValue(key, value) {
   if (key === "classIndex") {
     return Array.isArray(value) && value.every((cls) => isRecord(cls) && typeof cls.id === "string" && Array.isArray(cls.students || []) && Array.isArray(cls.scheduleRules || []) && Array.isArray(cls.overrides || []));
   }
+  if (key === "studentIndex") return validateStudentIndex(value);
   if (key === "calendar:events") {
     return Array.isArray(value) && value.every((event) => normalizeEvent(event) && typeof event.id === "string" && event.id.length > 0);
   }
@@ -555,6 +557,7 @@ export default function App() {
   const [lastBackupAt, setLastBackupAt] = useState(undefined); // undefined = still loading
   const fileInputRef = useRef(null);
   const [calendarEvents, setCalendarEvents, calendarReady] = useCachedStore("calendar:events", []);
+  const [studentIndex, setStudentIndex, studentIndexReady] = useCachedStore("studentIndex", {});
   const [officialEvents, setOfficialEvents] = useState([]);
   const [officialCalendarStatus, setOfficialCalendarStatus] = useState("loading");
 
@@ -576,6 +579,15 @@ export default function App() {
   }, []);
 
   const classIdxSave = useDebouncedSave(classes, "classIndex", ready);
+  useDebouncedSave(studentIndex, "studentIndex", studentIndexReady);
+
+  useEffect(() => {
+    if (!ready || !studentIndexReady) return;
+    setStudentIndex((previous) => mergeStudentIndex(previous, classes));
+    // The class roster remains authoritative for membership dates; this index
+    // only fills a stable student-first profile fallback for historical views.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, studentIndexReady, classes]);
 
   function updateClass(id, updater) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater({ ...c }) : c)));
@@ -667,6 +679,7 @@ export default function App() {
         schemaVersion: 2,
         exportedAt: new Date().toISOString(),
         classIndex: classes,
+        studentIndex,
         calendarEvents: calendarEvents || [],
         records,
       };
@@ -704,14 +717,17 @@ export default function App() {
         setToast("備份版本較新，請先更新系統再匯入。");
         return false;
       }
+      const importedClasses = dedupeById(bundle.classIndex);
+      const importedStudentIndex = validateStudentIndex(bundle.studentIndex) ? bundle.studentIndex : mergeStudentIndex({}, importedClasses);
       const importedEvents = Array.isArray(bundle.calendarEvents)
         ? bundle.calendarEvents.map(normalizeEvent).filter(Boolean).filter((event) => !event.readOnly)
         : null;
       const updates = {};
       const cacheEntries = [];
-      const importedClasses = dedupeById(bundle.classIndex);
       updates[keyToPath("classIndex")] = JSON.parse(JSON.stringify(importedClasses));
+      updates[keyToPath("studentIndex")] = JSON.parse(JSON.stringify(importedStudentIndex));
       cacheEntries.push(["classIndex", importedClasses]);
+      cacheEntries.push(["studentIndex", importedStudentIndex]);
       for (const c of importedClasses) {
         const rec = bundle.records[c.id];
         if (!rec) continue;
@@ -731,6 +747,7 @@ export default function App() {
         cacheEntries.forEach(([key, value]) => memoryCache.set(key, value));
       }
       if (importedEvents) setCalendarEvents(importedEvents);
+      setStudentIndex(importedStudentIndex);
       importClasses(importedClasses);
       setToast(`已從備份還原 ${importedClasses.length} 個班級${importedEvents ? `與 ${importedEvents.length} 個行事曆事件` : ""}。`);
       return true;
@@ -849,6 +866,7 @@ export default function App() {
           onBack={() => setView(returnView)}
           onUpdateClass={(updater) => updateClass(selectedClass.id, updater)}
           onArchive={(archived) => updateClass(selectedClass.id, (c) => ({ ...c, archived }))}
+          studentIndex={studentIndex}
         />
       )}
       <style>{CSS}</style>
@@ -1247,7 +1265,7 @@ function NewClassForm({ onCancel, onCreate }) {
 /* Class detail                                                        */
 /* ------------------------------------------------------------------ */
 
-function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, setJumpDate, knownSchools, onBack, onUpdateClass, onArchive }) {
+function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, setJumpDate, knownSchools, studentIndex, onBack, onUpdateClass, onArchive }) {
   const tabs = [
     { id: "attendance", label: "出缺勤", icon: ClipboardList },
     { id: "quiz", label: "平時考", icon: CircleDot },
@@ -1296,7 +1314,7 @@ function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, 
       </div>
 
       <div style={{ display: tab === "attendance" ? "block" : "none" }}>
-        <AttendanceTab key={cls.id + ":attendance"} cls={cls} date={jumpDate} setDate={setJumpDate} onUpdateClass={onUpdateClass} />
+        <AttendanceTab key={cls.id + ":attendance"} cls={cls} date={jumpDate} setDate={setJumpDate} onUpdateClass={onUpdateClass} studentIndex={studentIndex} />
       </div>
       <div style={{ display: tab === "quiz" ? "block" : "none" }}>
         <AssessmentTab key={cls.id + ":quiz"} cls={cls} storageKeyName={`quiz:${cls.id}`} unitLabel="平時考" withSegment withRank={false} />
@@ -1310,7 +1328,7 @@ function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, 
         </div>
       )}
       <div style={{ display: tab === "roster" ? "block" : "none" }}>
-        <RosterTab key={cls.id + ":roster"} cls={cls} knownSchools={knownSchools} onUpdateClass={onUpdateClass} />
+        <RosterTab key={cls.id + ":roster"} cls={cls} knownSchools={knownSchools} studentIndex={studentIndex} onUpdateClass={onUpdateClass} />
       </div>
     </div>
   );
@@ -1373,7 +1391,7 @@ function AttendanceStatusEditor({ studentName, value, onChange, onSave, onClear,
   );
 }
 
-function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
+function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [addOpen, setAddOpen] = useState(false);
@@ -1440,7 +1458,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
     });
   }
   function markStopped(studentId) {
-    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === studentId ? { ...s, endDate: date } : s)) }));
+    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === studentId ? { ...s, endDate: date, resumeDate: "" } : s)) }));
   }
   function setNote(value) {
     setDay((d) => ({ ...d, note: value }));
@@ -1485,6 +1503,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
     closeEditor();
   }
   const editingStudent = editingCell ? cls.students.find((student) => student.id === editingCell.studentId) : null;
+  const editingDisplayStudent = editingStudent ? studentDisplay(editingStudent, studentIndex, cls) : null;
   const editingValue = editingCell ? data[editingCell.date]?.records?.[editingCell.studentId] || "" : "";
 
   return (
@@ -1498,12 +1517,12 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
       </div>
 
       {viewMode === "overview" ? (
-        <AttendanceOverview cls={cls} data={data} onJump={(d, studentId) => { setDate(d); setViewMode("single"); setEditingCell(studentId ? { date: d, studentId } : null); }} onUpdateRecord={saveRecord} />
+        <AttendanceOverview cls={cls} data={data} studentIndex={studentIndex} onJump={(d, studentId) => { setDate(d); setViewMode("single"); setEditingCell(studentId ? { date: d, studentId } : null); }} onUpdateRecord={saveRecord} />
       ) : (
         <>
           {editingCell && editingStudent && (
             <AttendanceStatusEditor
-              studentName={`${editingStudent.name} · ${editingCell.date}`}
+              studentName={`${editingDisplayStudent.name} · ${editingCell.date}`}
               value={editingValue}
               onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
               onSave={(value) => saveEditing(value)}
@@ -1570,13 +1589,14 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
                   return m === "trial" || m === "active" || dayData.records[s.id];
                 })
                 .map((s) => {
+                const displayStudent = studentDisplay(s, studentIndex, cls);
                 const val = dayData.records[s.id] || "";
                 const isTrial = membershipAtDate(s, date, data) === "trial";
                 return (
                   <div key={s.id} className="roll-row">
                     <div className="roll-name">
-                      <div>{s.name}{isTrial && <span className="trial-tag">試</span>}</div>
-                      {s.school && <div className="roll-school">{s.school}</div>}
+                      <div>{displayStudent.name}{isTrial && <span className="trial-tag">試</span>}</div>
+                      {displayStudent.school && <div className="roll-school">{displayStudent.school}</div>}
                     </div>
                     <div className="status-group">
                       {STATUS_LIST.map((st) => {
@@ -1598,7 +1618,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass }) {
                         );
                       })}
                     </div>
-                    <ConfirmAction label={`確定將 ${s.name} 標記為停班？往後就不會再出現在出席表裡。`} confirmText="確定停班" onConfirm={() => markStopped(s.id)}><Archive size={14} /> 停班</ConfirmAction>
+                    <ConfirmAction label={`確定將 ${displayStudent.name} 標記為停班？往後就不會再出現在出席表裡。`} confirmText="確定停班" onConfirm={() => markStopped(s.id)}><Archive size={14} /> 停班</ConfirmAction>
                   </div>
                 );
               })}
@@ -1623,9 +1643,9 @@ function AttendanceMetric({ label, value, detail, tone }) {
   );
 }
 
-function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
-  const [overviewFilter, setOverviewFilter] = useState("all");
+function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord }) {
   const [editingCell, setEditingCell] = useState(null);
+  const displayStudents = cls.students.map((student) => studentDisplay(student, studentIndex, cls));
   const dates = Object.keys(data).filter((d) => Object.keys(data[d].records || {}).length > 0).sort();
   const dateRows = dates.map((date) => {
     const records = data[date].records || {};
@@ -1635,11 +1655,11 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
       cancelled: override?.action === "cancel",
       cancelNote: override?.note || "",
     });
-    const anomalies = findAttendanceAnomalies({ records, students: cls.students, date, wholeDayStatus });
+    const anomalies = findAttendanceAnomalies({ records, students: displayStudents, date, wholeDayStatus });
     return { date, records, summary, anomalies, wholeDayStatus };
   });
   const anomalyRows = dateRows.filter((row) => row.anomalies.length > 0);
-  const visibleRows = overviewFilter === "anomaly" ? anomalyRows : dateRows;
+  const visibleRows = dateRows;
   const knownStudentIds = new Set(cls.students.map((student) => student.id));
   const isStudentInClassOnDate = (student, date) => {
     const membership = membershipAtDate(student, date, data);
@@ -1656,7 +1676,7 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
       .filter(([, value]) => value !== undefined && value !== "");
     const summary = summarizeAttendanceRecords(Object.fromEntries(entries));
     const attendanceRate = summary.countedSessions ? Math.round((summary.出席 / summary.countedSessions) * 1000) / 10 : null;
-    return { student, ...summary, attendanceRate };
+    return { student: studentDisplay(student, studentIndex, cls), ...summary, attendanceRate };
   });
   const totalCountedSessions = studentStats.reduce((total, stat) => total + stat.countedSessions, 0);
   const attendanceRate = totalCountedSessions ? Math.round((overall.出席 / totalCountedSessions) * 1000) / 10 : null;
@@ -1679,6 +1699,7 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
   }
 
   const editingStudent = editingCell ? cls.students.find((student) => student.id === editingCell.studentId) : null;
+  const editingDisplayStudent = editingStudent ? studentDisplay(editingStudent, studentIndex, cls) : null;
   const editingValue = editingCell ? (editingCell.draftValue ?? data[editingCell.date]?.records?.[editingCell.studentId] ?? "") : "";
   return (
     <div className="attendance-overview">
@@ -1715,17 +1736,14 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
         </div>
       </div>
 
-      <div className="attendance-section-card attendance-timeline-card">
-        <div className="attendance-section-heading">
-          <div><div className="score-section-title">異常時間軸</div><span className="section-hint">只列停課後、入班前、全班延課日的個人紀錄、未知狀態或名單外資料</span></div>
-          <select className="filter-select" value={overviewFilter} onChange={(event) => setOverviewFilter(event.target.value)}>
-            <option value="all">全部紀錄日</option>
-            <option value="anomaly">只看真正異常日（{anomalyRows.length}）</option>
-          </select>
-        </div>
-        {dateRows.length === 0 ? <div className="empty-note">還沒有任何出缺勤紀錄。</div> : (
+      {anomalyRows.length > 0 && (
+        <div className="attendance-section-card attendance-timeline-card">
+          <div className="attendance-section-heading">
+            <div><div className="score-section-title">異常日</div><span className="section-hint">只列停課後、入班前、全班延課日的個人紀錄、未知狀態或名單外資料</span></div>
+            <span className="tag tag-bad">{anomalyRows.length} 天需檢查</span>
+          </div>
           <div className="attendance-timeline-list">
-            {visibleRows.slice().reverse().map(({ date, summary, anomalies, wholeDayStatus }) => (
+            {anomalyRows.slice().reverse().map(({ date, summary, anomalies, wholeDayStatus }) => (
               <div className={"attendance-timeline-row" + (anomalies.length ? " has-anomaly" : "")} key={date}>
                 <button type="button" className="attendance-timeline-date-button" onClick={() => onJump(date)} title={`開啟 ${date} 單日紀錄`}>
                   <span className="attendance-timeline-date">{date}<small>{WEEKDAY_FULL[weekdayOf(date)]}</small></span>
@@ -1745,14 +1763,13 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
                 <span className="attendance-timeline-arrow">›</span>
               </div>
             ))}
-            {visibleRows.length === 0 && <div className="empty-note">目前沒有真正異常的日期。</div>}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {editingCell && editingStudent && (
         <AttendanceStatusEditor
-          studentName={`${editingStudent.name} · ${editingCell.date}`}
+          studentName={`${editingDisplayStudent.name} · ${editingCell.date}`}
           value={editingValue}
           onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
           onSave={() => updateCell(editingValue)}
@@ -1761,17 +1778,17 @@ function AttendanceOverview({ cls, data, onJump, onUpdateRecord }) {
         />
       )}
 
-      {dates.length > 0 && (
+      {visibleRows.length > 0 && (
         <div className="attendance-section-card attendance-matrix-card">
-          <div className="attendance-section-heading"><div><div className="score-section-title">狀態矩陣</div><span className="section-hint">出席可同時顯示遲到／早退；底部矩陣可左右拖動，點擊任一格可修改或清除</span></div><span className="section-hint">{overviewFilter === "anomaly" ? `顯示 ${visibleRows.length} / ${dates.length} 天` : `${dates.length} 天`}</span></div>
+          <div className="attendance-section-heading"><div><div className="score-section-title">上課情形矩陣</div><span className="section-hint">完整顯示所有有紀錄日期；固定日期與學生標頭，點擊任一格可直接修改或清除</span></div><span className="section-hint">顯示 {visibleRows.length} 個紀錄日</span></div>
           <div className="matrix-scroll">
             <table className="matrix attendance-matrix">
-              <thead><tr><th className="matrix-corner">日期</th>{cls.students.map((student) => <th key={student.id} className="matrix-col-head"><div className="matrix-col-name">{student.name}</div></th>)}</tr></thead>
+              <thead><tr><th className="matrix-corner">日期</th>{displayStudents.map((student) => <th key={student.id} className="matrix-col-head"><div className="matrix-col-name">{student.name}</div><div className="matrix-col-school">{student.school || "未填學校"}</div></th>)}</tr></thead>
               <tbody>
                 {visibleRows.map(({ date, records }) => (
                   <tr key={date}>
                     <td className="matrix-row-head matrix-row-head-clickable" onClick={() => onJump(date)}>{date}</td>
-                    {cls.students.map((student) => {
+                    {displayStudents.map((student) => {
                       const value = records[student.id];
                       const statuses = normalizeAttendanceStatus(value);
                       return <td key={student.id} className="matrix-cell attendance-editable-cell"><button type="button" className="attendance-cell-button" onClick={() => openCell(date, student.id)} title={`修改 ${student.name} ${date} 的紀錄`}><AttendanceStatusChips value={statuses} compact /></button></td>;
@@ -2414,12 +2431,12 @@ function NewChargeForm({ students, onCancel, onCreate }) {
 /* Roster & schedule tab                                               */
 /* ------------------------------------------------------------------ */
 
-function RosterTab({ cls, knownSchools, onUpdateClass }) {
+function RosterTab({ cls, knownSchools, studentIndex, onUpdateClass }) {
   return (
     <div>
       <ClassInfoEditor cls={cls} onUpdateClass={onUpdateClass} />
       <OrphanRecovery cls={cls} onUpdateClass={onUpdateClass} />
-      <StudentEditor cls={cls} knownSchools={knownSchools} onUpdateClass={onUpdateClass} />
+      <StudentEditor cls={cls} knownSchools={knownSchools} studentIndex={studentIndex} onUpdateClass={onUpdateClass} />
       <SubjectEditor cls={cls} onUpdateClass={onUpdateClass} />
       <ScheduleEditor cls={cls} onUpdateClass={onUpdateClass} />
       <OverrideList cls={cls} onUpdateClass={onUpdateClass} />
@@ -2580,7 +2597,7 @@ function SchoolField({ value, onChange, knownSchools }) {
   );
 }
 
-function StudentEditor({ cls, knownSchools, onUpdateClass }) {
+function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
   const [name, setName] = useState("");
   const [school, setSchool] = useState("");
   const [isNewStudent, setIsNewStudent] = useState(true);
@@ -2599,10 +2616,10 @@ function StudentEditor({ cls, knownSchools, onUpdateClass }) {
     setName(""); setSchool("");
   }
   function stop(id) {
-    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, endDate: today } : s)) }));
+    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, endDate: today, resumeDate: "" } : s)) }));
   }
   function reactivate(id) {
-    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, endDate: "", membership: undefined, active: undefined } : s)) }));
+    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, resumeDate: today, membership: "active", active: undefined } : s)) }));
   }
   function toggleForce(id, current) {
     onUpdateClass((c) => ({
@@ -2622,14 +2639,16 @@ function StudentEditor({ cls, knownSchools, onUpdateClass }) {
       <div className="panel-title"><Users size={15} /> 學生名單</div>
       {enrolled.map((s) => {
         const membership = membershipAtDate(s, today, attendance);
+        const displayStudent = studentDisplay(s, studentIndex, cls);
         return (
           <div key={s.id} className="student-row">
             <input className="student-input" value={s.name} onChange={(e) => edit(s.id, "name", e.target.value)} placeholder="姓名" />
-            <SchoolField value={s.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
+            <SchoolField value={displayStudent.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
             <button className="btn-ghost btn-xs" title="試聽滿兩堂後會自動轉為班內生；這裡可以提前手動轉正，或反向手動延長試聽" onClick={() => toggleForce(s.id, membership)}>
               {membership === "trial" ? <><span className="trial-tag">試</span>轉為班內生</> : "設為試聽生"}
             </button>
-            <ConfirmAction label={`確定將 ${s.name} 標記為停班？往後就不會再出現在出席表裡（歷史紀錄仍會保留）。`} confirmText="確定停班" onConfirm={() => stop(s.id)}>
+                          <ConfirmAction label={`確定將 ${displayStudent.name} 標記為停班？往後就不會再出現在出席表裡（歷史紀錄仍會保留）。`} confirmText="確定停班" onConfirm={() => stop(s.id)}>
+
               <Archive size={13} /> 停班
             </ConfirmAction>
           </div>
@@ -2650,14 +2669,17 @@ function StudentEditor({ cls, knownSchools, onUpdateClass }) {
           <div className="section-hint" style={{ marginTop: 14, marginBottom: 6 }}>
             已停班（不會出現在出缺勤名單，但平時考/段考/總覽的歷史紀錄仍會保留）
           </div>
-          {stopped.map((s) => (
-            <div key={s.id} className="student-row student-row-inactive">
-              <span className="student-inactive-name">{s.name}{s.school ? `（${s.school}）` : ""}</span>
-              <span className="student-inactive-date">{s.endDate ? `停班於 ${s.endDate}` : ""}</span>
-              <button className="btn-ghost btn-xs" onClick={() => reactivate(s.id)}>重新啟用</button>
-              <ConfirmDelete label={`永久刪除${s.name}的所有資料？`} onConfirm={() => removePermanently(s.id)} />
-            </div>
-          ))}
+          {stopped.map((s) => {
+            const displayStudent = studentDisplay(s, studentIndex, cls);
+            return (
+              <div key={s.id} className="student-row student-row-inactive">
+                <span className="student-inactive-name">{displayStudent.name}{displayStudent.school ? `（${displayStudent.school}）` : ""}</span>
+                <span className="student-inactive-date">{s.endDate ? `停班於 ${s.endDate}` : ""}</span>
+                <button className="btn-ghost btn-xs" onClick={() => reactivate(s.id)}>重新啟用</button>
+                <ConfirmDelete label={`永久刪除${displayStudent.name}的所有資料？`} onConfirm={() => removePermanently(s.id)} />
+              </div>
+            );
+          })}
         </>
       )}
     </div>
@@ -3139,12 +3161,14 @@ const CSS = `
 .score-leaderboard-delta.is-down { color: #B23A34; }
 .score-leaderboard-pr, .score-leaderboard-latest { color: var(--ink-soft); font-size: 10px; }
 
-.matrix-scroll { overflow-x: auto; margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; }
-.matrix { border-collapse: collapse; width: 100%; background: var(--card); }
+.matrix-scroll { overflow: auto; max-height: min(56vh, 520px); margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.matrix { border-collapse: collapse; width: 100%; min-width: max-content; background: var(--card); }
 .matrix th, .matrix td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: 6px 8px; }
-.matrix-corner { position: sticky; left: 0; background: var(--card); z-index: 2; min-width: 76px; font-size: 12px; color: var(--ink-soft); text-align: left; }
-.matrix-row-head { position: sticky; left: 0; background: var(--card); z-index: 1; font-size: 13px; font-weight: 500; white-space: nowrap; }
-.matrix-col-head { min-width: 110px; position: relative; font-size: 12px; }
+.attendance-matrix thead th { position: sticky; top: 0; z-index: 3; background: var(--card); box-shadow: 0 1px 0 var(--line); }
+.matrix-corner { position: sticky !important; top: 0; left: 0; background: var(--ink) !important; color: white; z-index: 5 !important; min-width: 88px; font-size: 12px; text-align: left; }
+.matrix-row-head { position: sticky; left: 0; background: var(--card); z-index: 2; min-width: 88px; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.matrix-col-head { min-width: 118px; position: relative; font-size: 12px; }
+.matrix-col-school { margin-top: 3px; overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 400; }
 .matrix-col-head-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 5px; min-height: 28px; }
 .matrix-col-head-top .confirm-inline { padding: 2px 3px; }
 .matrix-col-head-top .icon-btn { width: 25px; height: 25px; border-radius: 6px; }
@@ -3175,6 +3199,8 @@ const CSS = `
   .attendance-anomaly-item { grid-template-columns: minmax(70px, 1fr) auto; }
   .attendance-anomaly-item > span { grid-column: 1; }
   .attendance-anomaly-item em { grid-column: 2; grid-row: 1 / span 2; }
+  .matrix-corner, .matrix-row-head { min-width: 82px; }
+  .matrix-col-head { min-width: 105px; }
   .attendance-editor-actions { grid-template-columns: auto 1fr auto auto; }
   .score-dashboard-heading { flex-direction: column; gap: 2px; }
   .score-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

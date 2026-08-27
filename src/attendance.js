@@ -1,3 +1,5 @@
+import { isStudentStoppedOnDate } from "./students.js";
+
 export const ATTENDANCE_BASE_STATUSES = ["出席", "請假", "曠課", "延課", "假期"];
 export const ATTENDANCE_MODIFIER_STATUSES = ["遲到", "早退"];
 export const ATTENDANCE_STATUSES = [...ATTENDANCE_BASE_STATUSES.slice(0, 3), ...ATTENDANCE_MODIFIER_STATUSES, ...ATTENDANCE_BASE_STATUSES.slice(3)];
@@ -74,8 +76,7 @@ export function attendanceAnomalyReason({ student, studentId, date, value, known
   if (tokens.length && tokens.some((token) => !ATTENDANCE_STATUSES.includes(token))) return "未知狀態";
   if (!tokens.length) return null;
   if (student?.joinDate && date < student.joinDate) return "入班前仍有紀錄";
-  const stopped = student && ((student.endDate && date > student.endDate) || ((student.membership === "stopped" || student.active === false) && (!student.endDate || date > student.endDate)));
-  if (stopped) return "停課後仍有紀錄";
+  if (student && isStudentStoppedOnDate(student, date)) return "停課後仍有紀錄";
   if (wholeDayStatus && attendanceBaseStatus(value) !== wholeDayStatus) return `全班${wholeDayStatus}日個人紀錄`;
   return null;
 }
