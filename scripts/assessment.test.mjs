@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   assessmentCapacity,
   buildScoreDistribution,
+  updateAssessmentColumn,
   isStudentEnrolledOnDate,
   median,
   numericScore,
@@ -77,4 +78,14 @@ test("student enrollment uses the assessment date rather than today's roster", (
 test("assessmentCapacity sums each assessment's historical enrolled count", () => {
   assert.equal(assessmentCapacity([{ enrolledCount: 5 }, { enrolledCount: 3 }, { enrolledCount: 0 }]), 8);
   assert.equal(assessmentCapacity([{ count: 10 }, {}]), 0);
+});
+
+test("updateAssessmentColumn changes name and range without losing other metadata", () => {
+  const column = { id: "q1", name: "小考一", date: "2026-06-04", subject: "數學", segment: "CH1", extra: "keep" };
+  assert.deepEqual(updateAssessmentColumn(column, { name: " 小考一修訂 ", segment: " CH1 1-1～1-3 " }), {
+    id: "q1", name: "小考一修訂", date: "2026-06-04", subject: "數學", segment: "CH1 1-1～1-3", extra: "keep",
+  });
+  assert.equal(updateAssessmentColumn(column, { name: "", segment: "new" }), column);
+  assert.equal(updateAssessmentColumn(column, { name: "小考一" }).segment, "CH1");
+  assert.equal(updateAssessmentColumn(column, { name: "小考一", segment: "" }).segment, "");
 });

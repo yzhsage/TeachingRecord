@@ -69,3 +69,10 @@ export function assessmentCapacity(columns) {
     return total + (Number.isFinite(count) && count >= 0 ? count : 0);
   }, 0);
 }
+
+export function updateAssessmentColumn(column, { name, segment } = {}) {
+  if (!column || !String(name || "").trim()) return column;
+  const next = { ...column, name: String(name).trim() };
+  if (segment !== undefined) next.segment = String(segment).trim();
+  return next;
+}
