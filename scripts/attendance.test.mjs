@@ -59,6 +59,12 @@ test("the stop date begins the stopped period and later records are anomalous", 
   assert.deepEqual(findAttendanceAnomalies({ records: { wu: "出席" }, students, date: "2026-06-30" }), expected);
 });
 
+test("resume date restores a student and prevents false post-stop anomalies", () => {
+  const students = [{ id: "wu", name: "吳亭儀", endDate: "2026-06-29", resumeDate: "2026-07-10" }];
+  assert.equal(findAttendanceAnomalies({ records: { wu: "出席" }, students, date: "2026-07-09" }).length, 1);
+  assert.deepEqual(findAttendanceAnomalies({ records: { wu: "出席" }, students, date: "2026-07-10" }), []);
+});
+
 test("stopped, pre-join, unknown, and orphan records are identified by student", () => {
   const students = [
     { id: "stopped", name: "停課生", endDate: "2026-08-05" },

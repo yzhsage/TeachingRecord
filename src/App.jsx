@@ -14,7 +14,7 @@ import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
 import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate } from "./assessment";
 import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, findAttendanceAnomalies, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus, wholeDayAttendanceStatus } from "./attendance";
-import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, validateStudentIndex } from "./students";
+import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "./students";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -284,7 +284,8 @@ function isStoppedAt(student, dateStr) {
   return isStudentStoppedOnDate(student, dateStr);
 }
 function membershipAtDate(student, dateStr, attendanceData) {
-  if (student.joinDate && dateStr < student.joinDate) return "not_yet";
+  const startDate = studentStartDate(student, attendanceData);
+  if (startDate && dateStr < startDate) return "not_yet";
   if (isStoppedAt(student, dateStr)) return "stopped";
   if (student.forceActive || student.membership === "active") return "active";
   if (student.forceTrial) return "trial";
@@ -307,6 +308,11 @@ function getMembership(s) {
    students who have since left the class. */
 function activeStudentCount(cls) {
   return (cls.students || []).filter((s) => getMembership(s) !== "stopped").length;
+}
+
+function isStudentOnAttendanceList(student, dateStr, attendanceData) {
+  const membership = membershipAtDate(student, dateStr, attendanceData);
+  return membership === "trial" || membership === "active";
 }
 
 /* ------------------------------------------------------------------ */
@@ -1436,7 +1442,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
       setDay((d) => ({
         ...d,
         records: Object.fromEntries(
-          cls.students.filter((s) => membershipAtDate(s, date, data) !== "stopped").map((s) => [s.id, value])
+          cls.students.filter((s) => isStudentOnAttendanceList(s, date, data)).map((s) => [s.id, value])
         ),
       }));
       onUpdateClass((c) => {
@@ -1477,7 +1483,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
       ...d,
       note: cancelReason,
       records: Object.fromEntries(
-        cls.students.filter((s) => membershipAtDate(s, date, data) !== "stopped").map((s) => [s.id, "延課"])
+        cls.students.filter((s) => isStudentOnAttendanceList(s, date, data)).map((s) => [s.id, "延課"])
       ),
     }));
     setCancelOpen(false);
@@ -1518,7 +1524,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
       </div>
 
       {viewMode === "overview" ? (
-        <AttendanceOverview cls={cls} data={data} studentIndex={studentIndex} onJump={(d, studentId, reason) => { setDate(d); setViewMode("single"); setEditingCell(studentId ? { date: d, studentId, anomalyReason: reason || "" } : null); }} onUpdateRecord={saveRecord} />
+        <AttendanceOverview cls={cls} data={data} studentIndex={studentIndex} onJump={(d) => { setDate(d); setViewMode("single"); setEditingCell(null); }} onUpdateRecord={saveRecord} />
       ) : (
         <>
           {editingCell && editingStudent && (
@@ -1588,10 +1594,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
           ) : (
             <div className="roll-list">
               {cls.students
-                .filter((s) => {
-                  const m = membershipAtDate(s, date, data);
-                  return m === "trial" || m === "active" || dayData.records[s.id];
-                })
+                .filter((s) => isStudentOnAttendanceList(s, date, data) || Boolean(dayData.records[s.id]))
                 .map((s) => {
                 const displayStudent = studentDisplay(s, studentIndex, cls);
                 const val = dayData.records[s.id] || "";
@@ -1665,10 +1668,7 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
   const anomalyRows = dateRows.filter((row) => row.anomalies.length > 0);
   const visibleRows = dateRows;
   const knownStudentIds = new Set(cls.students.map((student) => student.id));
-  const isStudentInClassOnDate = (student, date) => {
-    const membership = membershipAtDate(student, date, data);
-    return membership !== "stopped" && membership !== "not_yet";
-  };
+  const isStudentInClassOnDate = (student, date) => isStudentOnAttendanceList(student, date, data);
   const allEntries = dateRows.flatMap(({ date, records }) => Object.entries(records)
     .filter(([studentId]) => knownStudentIds.has(studentId) && isStudentInClassOnDate(cls.students.find((student) => student.id === studentId), date))
     .map(([studentId, value]) => [`${date}:${studentId}`, value]));
@@ -1760,7 +1760,7 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
                   {anomalies.length ? (
                     <div className="attendance-anomaly-list">
                       {anomalies.map((anomaly) => (
-                        <button type="button" className="attendance-anomaly-item" key={`${anomaly.studentId}:${anomaly.reason}`} onClick={() => onJump(date, anomaly.studentId, anomaly.reason)} title={`直接修改 ${anomaly.studentName} ${date} 的紀錄`}>
+                        <button type="button" className="attendance-anomaly-item" key={`${anomaly.studentId}:${anomaly.reason}`} onClick={() => openCell(date, anomaly.studentId)} title={`直接修改 ${anomaly.studentName} ${date} 的紀錄`}>
                           <b>{anomaly.studentName}</b><AttendanceStatusChips value={anomaly.value} compact /><span>{anomaly.reason}</span><em>修改 ›</em>
                         </button>
                       ))}
@@ -2629,7 +2629,10 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
     onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, endDate: today, resumeDate: "" } : s)) }));
   }
   function reactivate(id) {
-    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, resumeDate: today, membership: "active", active: undefined } : s)) }));
+    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, resumeDate: today, membership: "active", active: true } : s)) }));
+  }
+  function cancelStop(id) {
+    onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, endDate: "", resumeDate: "", membership: "active", active: true } : s)) }));
   }
   function toggleForce(id, current) {
     onUpdateClass((c) => ({
@@ -2654,6 +2657,7 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
           <div key={s.id} className="student-row">
             <input className="student-input" value={s.name} onChange={(e) => edit(s.id, "name", e.target.value)} placeholder="姓名" />
             <SchoolField value={displayStudent.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
+            {s.endDate && <button className="btn-ghost btn-xs" title="若先前是誤按停班，可移除停班與復課日期；若要保留離班歷史，請不要按此鈕" onClick={() => cancelStop(s.id)}>撤銷停班紀錄</button>}
             <button className="btn-ghost btn-xs" title="試聽滿兩堂後會自動轉為班內生；這裡可以提前手動轉正，或反向手動延長試聽" onClick={() => toggleForce(s.id, membership)}>
               {membership === "trial" ? <><span className="trial-tag">試</span>轉為班內生</> : "設為試聽生"}
             </button>
@@ -2677,7 +2681,7 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
       {stopped.length > 0 && (
         <>
           <div className="section-hint" style={{ marginTop: 14, marginBottom: 6 }}>
-            已停班（不會出現在出缺勤名單，但平時考/段考/總覽的歷史紀錄仍會保留）
+            已停班（不會出現在出缺勤名單，但平時考/段考/總覽的歷史紀錄仍會保留）。若是誤按停班，請按「撤銷停班」；若是實際離班後回來，才按「今天復課」，不要另外新增同名學生。
           </div>
           {stopped.map((s) => {
             const displayStudent = studentDisplay(s, studentIndex, cls);
@@ -2686,7 +2690,8 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
                 <input className="student-input student-inactive-name-input" value={s.name || displayStudent.name} onChange={(e) => edit(s.id, "name", e.target.value)} placeholder="姓名" />
                 <SchoolField value={displayStudent.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
                 <span className="student-inactive-date">{s.endDate ? `停班於 ${s.endDate}` : ""}</span>
-                <button className="btn-ghost btn-xs" onClick={() => reactivate(s.id)}>重新啟用</button>
+                <button className="btn-primary btn-xs" title="誤按停班時清除停班日期，保留原本學生 ID 與歷史紀錄" onClick={() => cancelStop(s.id)}>撤銷停班</button>
+                <button className="btn-ghost btn-xs" title="保留停班歷史，從今天開始復課" onClick={() => reactivate(s.id)}>今天復課</button>
                 <ConfirmDelete label={`永久刪除${displayStudent.name}的所有資料？`} onConfirm={() => removePermanently(s.id)} />
               </div>
             );
@@ -2870,12 +2875,12 @@ const CSS = `
   .save-indicator { font-size: 11px; color: var(--ink-soft); font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
   .save-indicator-error { border: none; background: none; color: #B23A34; cursor: pointer; font-family: inherit; padding: 0; text-decoration: underline; }
 
-.toast { position: sticky; top: 58px; z-index: 9; margin: 0 16px 0; max-width: 688px; margin-left: auto; margin-right: auto; background: var(--ink); color: white; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.toast { position: sticky; top: 58px; z-index: 9; margin: 0 16px 0; max-width: 1148px; margin-left: auto; margin-right: auto; background: var(--ink); color: white; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
 .toast button { background: none; border: none; color: white; opacity: 0.7; cursor: pointer; display: flex; }
 
 .backup-warning { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #FBEAE9; border: 1px solid #F0C6C3; color: #8C332E; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; flex-wrap: wrap; }
 
-.view-pad { padding: 16px; max-width: 720px; margin: 0 auto; }
+.view-pad { padding: 16px; max-width: 1180px; margin: 0 auto; }
 .view-pad-attendance { max-width: 1180px; }
 
 .section-label { font-family: 'Noto Serif TC', serif; font-weight: 700; font-size: 15px; margin: 18px 0 10px; }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, validateStudentIndex } from "../src/students.js";
+import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "../src/students.js";
 
 test("student stop date is inclusive and resume date restores membership", () => {
   const student = { endDate: "2026-06-29", resumeDate: "2026-07-10" };
@@ -8,6 +8,17 @@ test("student stop date is inclusive and resume date restores membership", () =>
   assert.equal(isStudentStoppedOnDate(student, "2026-06-30"), true);
   assert.equal(isStudentStoppedOnDate(student, "2026-07-09"), true);
   assert.equal(isStudentStoppedOnDate(student, "2026-07-10"), false);
+});
+
+test("studentStartDate prefers joinDate and infers the first legacy attendance date", () => {
+  const legacyAttendance = {
+    "2026-06-04": { records: {} },
+    "2026-06-11": { records: { wu: "出席" } },
+    "2026-06-18": { records: { wu: ["出席", "遲到"] } },
+  };
+  assert.equal(studentStartDate({ id: "wu", joinDate: "2026-05-01" }, legacyAttendance), "2026-05-01");
+  assert.equal(studentStartDate({ id: "wu" }, legacyAttendance), "2026-06-11");
+  assert.equal(studentStartDate({ id: "none" }, legacyAttendance), "");
 });
 
 test("mergeStudentIndex builds one student profile with per-class enrollment records", () => {

@@ -9,6 +9,23 @@ export function isStudentStoppedOnDate(student, dateStr) {
   return (student.membership === "stopped" || student.active === false) && (!student.endDate || dateStr > student.endDate);
 }
 
+/**
+ * Return the first date on which a student can be considered present in a
+ * historical view. New records should carry joinDate; for older Excel imports
+ * without it, the first non-empty record is the safest available boundary.
+ */
+export function studentStartDate(student, attendanceData = {}) {
+  if (student?.joinDate) return student.joinDate;
+  if (!isRecord(attendanceData)) return "";
+  return Object.keys(attendanceData)
+    .filter((date) => {
+      if (!isRecord(attendanceData[date]) || !isRecord(attendanceData[date].records)) return false;
+      const value = attendanceData[date].records[student?.id];
+      return value !== undefined && value !== null && value !== "" && (!Array.isArray(value) || value.length > 0);
+    })
+    .sort()[0] || "";
+}
+
 export function normalizeStudentIndex(value) {
   if (!isRecord(value)) return {};
   return Object.fromEntries(
