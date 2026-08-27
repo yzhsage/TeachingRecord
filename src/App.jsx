@@ -1283,7 +1283,7 @@ function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, 
   }
 
   return (
-    <div className="view-pad">
+    <div className={"view-pad" + (tab === "attendance" ? " view-pad-attendance" : "")}>
       <div className="detail-header">
         <IconBtn onClick={onBack} title="返回"><ArrowLeft size={18} /></IconBtn>
         <IconBtn onClick={() => goAdjacent(prevAdj)} disabled={!prevAdj} title={prevAdj ? `上一個上課班級：${prevAdj.cls.name}` : "沒有其他班級"}><ChevronLeft size={18} /></IconBtn>
@@ -1351,7 +1351,7 @@ function AttendanceStatusChips({ value, compact = false }) {
   );
 }
 
-function AttendanceStatusEditor({ studentName, value, onChange, onSave, onClear, onCancel }) {
+function AttendanceStatusEditor({ studentName, value, onChange, onSave, onClear, onCancel, anomalyReason = "" }) {
   const statuses = normalizeAttendanceStatus(value);
   return (
     <div className="attendance-editor-panel" role="dialog" aria-label={`${studentName}出缺勤紀錄編輯`}>
@@ -1359,6 +1359,7 @@ function AttendanceStatusEditor({ studentName, value, onChange, onSave, onClear,
         <div><strong>{studentName}</strong><span>修改這一天的出缺勤狀態</span></div>
         <button type="button" className="icon-btn" onClick={onCancel} title="關閉編輯"><X size={15} /></button>
       </div>
+      {anomalyReason && <div className="attendance-editor-warning"><strong>這筆資料被判定為異常：{anomalyReason}</strong><span>這裡沒有「停班」出缺勤狀態；若學生的停班／停課設定正確，請直接清除這筆紀錄。只有在確認判定或學生資料錯誤時，才改選正確狀態後儲存。</span></div>}
       <div className="attendance-editor-options">
         {ATTENDANCE_STATUSES.map((status) => {
           const isModifier = ATTENDANCE_MODIFIER_STATUSES.includes(status);
@@ -1382,7 +1383,7 @@ function AttendanceStatusEditor({ studentName, value, onChange, onSave, onClear,
       </div>
       <div className="attendance-editor-hint">基礎狀態擇一；遲到、早退只有在出席時可同時勾選。</div>
       <div className="form-actions attendance-editor-actions">
-        <button type="button" className="btn-ghost btn-xs" onClick={onClear}>清除紀錄</button>
+        <button type="button" className={anomalyReason ? "btn-danger btn-sm" : "btn-ghost btn-xs"} onClick={onClear}>{anomalyReason ? "清除這筆異常紀錄" : "清除紀錄"}</button>
         <span />
         <button type="button" className="btn-ghost btn-xs" onClick={onCancel}>取消</button>
         <button type="button" className="btn-primary btn-sm" onClick={() => onSave(serializeAttendanceStatus(statuses))}>儲存</button>
@@ -1504,7 +1505,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
   }
   const editingStudent = editingCell ? cls.students.find((student) => student.id === editingCell.studentId) : null;
   const editingDisplayStudent = editingStudent ? studentDisplay(editingStudent, studentIndex, cls) : null;
-  const editingValue = editingCell ? data[editingCell.date]?.records?.[editingCell.studentId] || "" : "";
+  const editingValue = editingCell ? (editingCell.draftValue ?? data[editingCell.date]?.records?.[editingCell.studentId] ?? "") : "";
 
   return (
     <div>
@@ -1517,18 +1518,21 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
       </div>
 
       {viewMode === "overview" ? (
-        <AttendanceOverview cls={cls} data={data} studentIndex={studentIndex} onJump={(d, studentId) => { setDate(d); setViewMode("single"); setEditingCell(studentId ? { date: d, studentId } : null); }} onUpdateRecord={saveRecord} />
+        <AttendanceOverview cls={cls} data={data} studentIndex={studentIndex} onJump={(d, studentId, reason) => { setDate(d); setViewMode("single"); setEditingCell(studentId ? { date: d, studentId, anomalyReason: reason || "" } : null); }} onUpdateRecord={saveRecord} />
       ) : (
         <>
           {editingCell && editingStudent && (
-            <AttendanceStatusEditor
-              studentName={`${editingDisplayStudent.name} · ${editingCell.date}`}
-              value={editingValue}
-              onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
-              onSave={(value) => saveEditing(value)}
-              onClear={() => saveEditing("")}
-              onCancel={closeEditor}
-            />
+            <div className="attendance-editor-drawer">
+              <AttendanceStatusEditor
+                studentName={`${editingDisplayStudent.name} · ${editingCell.date}`}
+                value={editingValue}
+                anomalyReason={editingCell.anomalyReason || ""}
+                onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
+                onSave={(value) => saveEditing(value)}
+                onClear={() => saveEditing("")}
+                onCancel={closeEditor}
+              />
+            </div>
           )}
           <div className="date-nav" style={{ marginTop: 12 }}>
             <IconBtn onClick={() => goToNearestClassDay(-1)} title={atStart ? "已經是第一堂課" : "上一個上課日"} disabled={atStart}><ChevronLeft size={18} /></IconBtn>
@@ -1683,7 +1687,9 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
   const maxStudentEvents = Math.max(1, ...studentStats.map((stat) => Math.max(stat.遲到, stat.早退, stat.請假, stat.曠課, 0)));
 
   function openCell(date, studentId) {
-    setEditingCell({ date, studentId });
+    const row = dateRows.find((item) => item.date === date);
+    const anomaly = row?.anomalies.find((item) => item.studentId === studentId);
+    setEditingCell({ date, studentId, anomalyReason: anomaly?.reason || "" });
   }
   function closeEditor() {
     setEditingCell(null);
@@ -1701,6 +1707,7 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
   const editingStudent = editingCell ? cls.students.find((student) => student.id === editingCell.studentId) : null;
   const editingDisplayStudent = editingStudent ? studentDisplay(editingStudent, studentIndex, cls) : null;
   const editingValue = editingCell ? (editingCell.draftValue ?? data[editingCell.date]?.records?.[editingCell.studentId] ?? "") : "";
+  const editingAnomalyReason = editingCell?.anomalyReason || anomalyRows.find((row) => row.date === editingCell?.date)?.anomalies.find((anomaly) => anomaly.studentId === editingCell?.studentId)?.reason || "";
   return (
     <div className="attendance-overview">
       <div className="attendance-overview-heading">
@@ -1753,7 +1760,7 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
                   {anomalies.length ? (
                     <div className="attendance-anomaly-list">
                       {anomalies.map((anomaly) => (
-                        <button type="button" className="attendance-anomaly-item" key={`${anomaly.studentId}:${anomaly.reason}`} onClick={() => onJump(date, anomaly.studentId)} title={`直接修改 ${anomaly.studentName} ${date} 的紀錄`}>
+                        <button type="button" className="attendance-anomaly-item" key={`${anomaly.studentId}:${anomaly.reason}`} onClick={() => onJump(date, anomaly.studentId, anomaly.reason)} title={`直接修改 ${anomaly.studentName} ${date} 的紀錄`}>
                           <b>{anomaly.studentName}</b><AttendanceStatusChips value={anomaly.value} compact /><span>{anomaly.reason}</span><em>修改 ›</em>
                         </button>
                       ))}
@@ -1768,14 +1775,17 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
       )}
 
       {editingCell && editingStudent && (
-        <AttendanceStatusEditor
-          studentName={`${editingDisplayStudent.name} · ${editingCell.date}`}
-          value={editingValue}
-          onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
-          onSave={() => updateCell(editingValue)}
-          onClear={() => updateCell("")}
-          onCancel={closeEditor}
-        />
+        <div className="attendance-editor-drawer">
+          <AttendanceStatusEditor
+            studentName={`${editingDisplayStudent.name} · ${editingCell.date}`}
+            value={editingValue}
+            anomalyReason={editingAnomalyReason}
+            onChange={(value) => setEditingCell((current) => current ? { ...current, draftValue: value } : current)}
+            onSave={() => updateCell(editingValue)}
+            onClear={() => updateCell("")}
+            onCancel={closeEditor}
+          />
+        </div>
       )}
 
       {visibleRows.length > 0 && (
@@ -2673,7 +2683,8 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
             const displayStudent = studentDisplay(s, studentIndex, cls);
             return (
               <div key={s.id} className="student-row student-row-inactive">
-                <span className="student-inactive-name">{displayStudent.name}{displayStudent.school ? `（${displayStudent.school}）` : ""}</span>
+                <input className="student-input student-inactive-name-input" value={s.name || displayStudent.name} onChange={(e) => edit(s.id, "name", e.target.value)} placeholder="姓名" />
+                <SchoolField value={displayStudent.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
                 <span className="student-inactive-date">{s.endDate ? `停班於 ${s.endDate}` : ""}</span>
                 <button className="btn-ghost btn-xs" onClick={() => reactivate(s.id)}>重新啟用</button>
                 <ConfirmDelete label={`永久刪除${displayStudent.name}的所有資料？`} onConfirm={() => removePermanently(s.id)} />
@@ -2865,6 +2876,7 @@ const CSS = `
 .backup-warning { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #FBEAE9; border: 1px solid #F0C6C3; color: #8C332E; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; flex-wrap: wrap; }
 
 .view-pad { padding: 16px; max-width: 720px; margin: 0 auto; }
+.view-pad-attendance { max-width: 1180px; }
 
 .section-label { font-family: 'Noto Serif TC', serif; font-weight: 700; font-size: 15px; margin: 18px 0 10px; }
 .section-hint { font-size: 12px; color: var(--ink-soft); }
@@ -3099,8 +3111,20 @@ const CSS = `
 .attendance-editable-cell { padding: 3px !important; }
 .attendance-cell-button { display: flex; align-items: center; justify-content: center; min-height: 28px; width: 100%; min-width: 54px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-family: inherit; }
 .attendance-cell-button:hover, .attendance-cell-button:focus-visible { border-color: var(--brass); background: #FFFDF7; outline: none; }
-.attendance-matrix .matrix-col-head { min-width: 92px; }
-.attendance-editor-panel { margin-top: 12px; padding: 12px; border: 1px solid var(--brass); border-radius: 12px; background: #FFFDF7; box-shadow: 0 8px 24px rgba(33,38,43,0.08); }
+.attendance-matrix .matrix-col-head { min-width: 150px; }
+.attendance-editor-drawer { position: fixed; z-index: 20; left: 50%; bottom: 14px; width: min(820px, calc(100vw - 28px)); max-height: calc(100vh - 28px); overflow: auto; transform: translateX(-50%); }
+.attendance-editor-panel { margin-top: 0; padding: 14px 16px; border: 1px solid var(--brass); border-radius: 12px; background: #FFFDF7; box-shadow: 0 8px 24px rgba(33,38,43,0.18); }
+.attendance-editor-warning { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding: 9px 10px; border: 1px solid #F0C6C3; border-radius: 8px; background: #FBEAE9; color: #8C332E; font-size: 11px; }
+.attendance-editor-warning strong { font-size: 12px; }
+.attendance-editor-warning span { color: #8C332E; line-height: 1.5; }
+.attendance-editor-actions .btn-danger { min-width: 150px; }
+.view-pad-attendance .matrix-scroll { max-height: min(64vh, 650px); }
+.view-pad-attendance .attendance-matrix .matrix-col-head { min-width: 150px; }
+.view-pad-attendance .attendance-matrix .matrix-row-head { min-width: 116px; }
+.view-pad-attendance .attendance-matrix .attendance-cell-button { min-width: 96px; min-height: 38px; }
+.view-pad-attendance .attendance-matrix .matrix-col-school { white-space: normal; line-height: 1.35; min-height: 15px; }
+.student-inactive-name-input { min-width: 135px; }
+.student-row-inactive .student-input { min-width: 135px; }
 .attendance-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .attendance-editor-heading strong, .attendance-editor-heading span { display: block; }
 .attendance-editor-heading span { margin-top: 2px; color: var(--ink-soft); font-size: 11px; }
@@ -3200,7 +3224,12 @@ const CSS = `
   .attendance-anomaly-item > span { grid-column: 1; }
   .attendance-anomaly-item em { grid-column: 2; grid-row: 1 / span 2; }
   .matrix-corner, .matrix-row-head { min-width: 82px; }
-  .matrix-col-head { min-width: 105px; }
+  .matrix-col-head, .view-pad-attendance .attendance-matrix .matrix-col-head { min-width: 105px; }
+  .view-pad-attendance .attendance-matrix .matrix-row-head { min-width: 82px; }
+  .view-pad-attendance .attendance-matrix .attendance-cell-button { min-width: 54px; min-height: 28px; }
+  .view-pad-attendance .attendance-matrix .matrix-col-school { white-space: nowrap; }
+  .student-row-inactive .student-input, .student-inactive-name-input { min-width: 0; width: 100%; }
+  .attendance-editor-drawer { bottom: 8px; width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
   .attendance-editor-actions { grid-template-columns: auto 1fr auto auto; }
   .score-dashboard-heading { flex-direction: column; gap: 2px; }
   .score-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

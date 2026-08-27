@@ -24,16 +24,26 @@ test("mergeStudentIndex builds one student profile with per-class enrollment rec
       name: "高中物理班",
       subject: "物理",
       grade: "高中",
-      students: [{ id: "wu", name: "吳亭儀", school: "甲高中", joinDate: "2026-04-02" }],
+      students: [{ id: "wu", name: "吳亭儀", school: "乙高中", joinDate: "2026-04-02" }],
     },
   ];
   const index = mergeStudentIndex({}, classes);
   assert.equal(index.wu.name, "吳亭儀");
-  assert.equal(index.wu.school, "甲高中");
+  assert.equal(index.wu.school, "乙高中");
+  assert.equal(index.wu.enrollments.math.school, "甲高中");
   assert.equal(index.wu.enrollments.math.joinDate, "2026-03-01");
   assert.equal(index.wu.enrollments.math.endDate, "2026-06-29");
+  assert.equal(index.wu.enrollments.physics.school, "乙高中");
   assert.equal(index.wu.enrollments.physics.joinDate, "2026-04-02");
   assert.equal(index.wu.enrollments.physics.endDate, undefined);
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, index, { id: "math", grade: "高中" }).school, "甲高中");
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, index, { id: "physics", grade: "高中" }).school, "乙高中");
+});
+
+test("studentDisplay prefers the class enrollment school before the global fallback", () => {
+  const display = studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, { wu: { id: "wu", name: "吳亭儀", school: "錯誤學校", enrollments: { math: { school: "甲高中" } } } }, { id: "math", grade: "高中" });
+  assert.equal(display.school, "甲高中");
+  assert.equal(display.name, "吳亭儀");
 });
 
 test("studentDisplay falls back to the student-first profile when class fields are blank", () => {

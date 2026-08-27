@@ -34,6 +34,7 @@ export function mergeStudentIndex(value, classes) {
       if (Object.prototype.hasOwnProperty.call(student, "joinDate")) enrollment.joinDate = student.joinDate || "";
       if (Object.prototype.hasOwnProperty.call(student, "endDate")) enrollment.endDate = student.endDate || "";
       if (Object.prototype.hasOwnProperty.call(student, "resumeDate")) enrollment.resumeDate = student.resumeDate || "";
+      if (student.school) enrollment.school = student.school;
       next[student.id] = {
         ...previous,
         id: student.id,
@@ -53,13 +54,14 @@ export function mergeStudentIndex(value, classes) {
 
 export function studentDisplay(student, studentIndex, cls) {
   const profile = normalizeStudentIndex(studentIndex)[student?.id] || {};
+  const enrollment = profile.enrollments?.[cls?.id] || {};
   return {
     ...profile,
     ...(student || {}),
     id: student?.id || profile.id || "",
     name: student?.name || profile.name || "未命名學生",
-    school: student?.school || profile.school || "",
-    grade: student?.grade || profile.grade || cls?.grade || "",
+    school: student?.school || enrollment.school || profile.school || "",
+    grade: student?.grade || enrollment.grade || profile.grade || cls?.grade || "",
   };
 }
 
