@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatStudentSchoolGroup, isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "../src/students.js";
+import { formatStudentSchoolGroup, isStudentStoppedOnDate, mergeStudentIndex, removeStudentFromRecords, removeStudentFromStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "../src/students.js";
 
 test("student stop date is inclusive and resume date restores membership", () => {
   const student = { endDate: "2026-06-29", resumeDate: "2026-07-10" };
@@ -67,6 +67,30 @@ test("studentDisplay falls back to the student-first profile when class fields a
     school: "甲高中",
     grade: "高中",
   });
+});
+
+test("removeStudentFromRecords removes only the selected student from every record type", () => {
+  const cleaned = removeStudentFromRecords("wu", {
+    attendance: { "2026-06-01": { records: { wu: "出席", li: "請假" }, note: "保留" } },
+    quiz: { columns: [{ id: "q1", name: "小考一" }], scores: { q1: { wu: { score: 88 }, li: { score: 92 } } } },
+    exam: { columns: [{ id: "e1", name: "段考" }], scores: { e1: { wu: { score: 80 }, li: { score: 90 } } } },
+    fee: { charges: [{ id: "f1", studentId: "wu", tuition: 100 }, { id: "f2", studentId: "li", tuition: 200 }] },
+  });
+  assert.deepEqual(cleaned.attendance["2026-06-01"].records, { li: "請假" });
+  assert.deepEqual(cleaned.quiz.scores.q1, { li: { score: 92 } });
+  assert.deepEqual(cleaned.exam.scores.e1, { li: { score: 90 } });
+  assert.deepEqual(cleaned.fee.charges, [{ id: "f2", studentId: "li", tuition: 200 }]);
+  assert.deepEqual(cleaned.quiz.columns, [{ id: "q1", name: "小考一" }]);
+});
+
+test("removeStudentFromStudentIndex removes one class enrollment but keeps other classes", () => {
+  const index = {
+    wu: { id: "wu", name: "吳亭儀", enrollments: { math: { school: "甲高中" }, physics: { school: "乙高中" } }, classes: { math: { name: "數學" }, physics: { name: "物理" } } },
+  };
+  const afterMath = removeStudentFromStudentIndex(index, "wu", "math");
+  assert.deepEqual(afterMath.wu.enrollments, { physics: { school: "乙高中" } });
+  const afterPhysics = removeStudentFromStudentIndex(afterMath, "wu", "physics");
+  assert.equal(afterPhysics.wu, undefined);
 });
 
 test("formatStudentSchoolGroup appends the group only when present", () => {

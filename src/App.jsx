@@ -14,7 +14,7 @@ import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
 import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate, updateAssessmentColumn } from "./assessment";
 import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, findAttendanceAnomalies, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus, wholeDayAttendanceStatus } from "./attendance";
-import { formatStudentSchoolGroup, isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "./students";
+import { formatStudentSchoolGroup, isStudentStoppedOnDate, mergeStudentIndex, removeStudentFromRecords, removeStudentFromStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "./students";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -507,7 +507,7 @@ function IconBtn({ onClick, children, title, danger, disabled }) {
 }
 /* Inline confirm-to-delete (no native confirm() dialogs, which don't
    reliably work inside sandboxed previews). */
-function ConfirmDelete({ onConfirm, title, label }) {
+function ConfirmDelete({ onConfirm, title, label, buttonLabel }) {
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
     return (
@@ -518,6 +518,7 @@ function ConfirmDelete({ onConfirm, title, label }) {
       </span>
     );
   }
+  if (buttonLabel) return <button className="btn-danger btn-xs" title={title || buttonLabel} onClick={() => setConfirming(true)}><Trash2 size={14} /> {buttonLabel}</button>;
   return <IconBtn danger title={title || "刪除"} onClick={() => setConfirming(true)}><Trash2 size={15} /></IconBtn>;
 }
 /* Neutral (non-destructive-red) inline confirm, for consequential but
@@ -611,6 +612,45 @@ export default function App() {
       imported.forEach((c) => map.set(c.id, c));
       return Array.from(map.values());
     });
+  }
+  async function purgeStudentRecords(classId, studentId, hasFee) {
+    const getCachedOrLoad = async (key, fallback) => (memoryCache.has(key) ? memoryCache.get(key) : loadKey(key, fallback));
+    try {
+      const [attendance, quiz, exam, fee] = await Promise.all([
+        getCachedOrLoad(`attendance:${classId}`, {}),
+        getCachedOrLoad(`quiz:${classId}`, { columns: [], scores: {} }),
+        getCachedOrLoad(`exam:${classId}`, { columns: [], scores: {} }),
+        hasFee ? getCachedOrLoad(`fee:${classId}`, { charges: [] }) : Promise.resolve({ charges: [] }),
+      ]);
+      const cleaned = removeStudentFromRecords(studentId, { attendance, quiz, exam, fee });
+      const nextStudentIndex = removeStudentFromStudentIndex(studentIndex, studentId, classId);
+      const updates = {
+        [keyToPath(`attendance:${classId}`)]: JSON.parse(JSON.stringify(cleaned.attendance)),
+        [keyToPath(`quiz:${classId}`)]: JSON.parse(JSON.stringify(cleaned.quiz)),
+        [keyToPath(`exam:${classId}`)]: JSON.parse(JSON.stringify(cleaned.exam)),
+        [keyToPath("studentIndex")]: JSON.parse(JSON.stringify(nextStudentIndex)),
+      };
+      const cacheEntries = [
+        [`attendance:${classId}`, cleaned.attendance],
+        [`quiz:${classId}`, cleaned.quiz],
+        [`exam:${classId}`, cleaned.exam],
+        ["studentIndex", nextStudentIndex],
+      ];
+      const shouldWriteFee = hasFee || (fee?.charges || []).length > 0;
+      if (shouldWriteFee) {
+        updates[keyToPath(`fee:${classId}`)] = JSON.parse(JSON.stringify(cleaned.fee));
+        cacheEntries.push([`fee:${classId}`, cleaned.fee]);
+      }
+      await dbUpdate(ref(db), updates);
+      cacheEntries.forEach(([key, value]) => memoryCache.set(key, value));
+      setStudentIndex(nextStudentIndex);
+      setToast("已永久清除這位學生在本班的全部紀錄。");
+      return true;
+    } catch (error) {
+      console.error("student purge failed", classId, studentId, error);
+      setToast("永久清除失敗，資料未完成移除；請確認網路後再試。");
+      return false;
+    }
   }
 
   useEffect(() => {
@@ -873,6 +913,7 @@ export default function App() {
           onBack={() => setView(returnView)}
           onUpdateClass={(updater) => updateClass(selectedClass.id, updater)}
           onArchive={(archived) => updateClass(selectedClass.id, (c) => ({ ...c, archived }))}
+          onPurgeStudent={(studentId) => purgeStudentRecords(selectedClass.id, studentId, selectedClass.hasFee)}
           studentIndex={studentIndex}
         />
       )}
@@ -1272,7 +1313,7 @@ function NewClassForm({ onCancel, onCreate }) {
 /* Class detail                                                        */
 /* ------------------------------------------------------------------ */
 
-function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, setJumpDate, knownSchools, studentIndex, onBack, onUpdateClass, onArchive }) {
+function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, setJumpDate, knownSchools, studentIndex, onBack, onUpdateClass, onArchive, onPurgeStudent }) {
   const tabs = [
     { id: "attendance", label: "出缺勤", icon: ClipboardList },
     { id: "quiz", label: "平時考", icon: CircleDot },
@@ -1335,7 +1376,7 @@ function ClassDetail({ cls, allClasses, onNavigateClass, tab, setTab, jumpDate, 
         </div>
       )}
       <div style={{ display: tab === "roster" ? "block" : "none" }}>
-        <RosterTab key={cls.id + ":roster"} cls={cls} knownSchools={knownSchools} studentIndex={studentIndex} onUpdateClass={onUpdateClass} />
+        <RosterTab key={cls.id + ":roster"} cls={cls} knownSchools={knownSchools} studentIndex={studentIndex} onUpdateClass={onUpdateClass} onPurgeStudent={onPurgeStudent} />
       </div>
     </div>
   );
@@ -2461,11 +2502,11 @@ function NewChargeForm({ students, onCancel, onCreate }) {
 /* Roster & schedule tab                                               */
 /* ------------------------------------------------------------------ */
 
-function RosterTab({ cls, knownSchools, studentIndex, onUpdateClass }) {
+function RosterTab({ cls, knownSchools, studentIndex, onUpdateClass, onPurgeStudent }) {
   return (
     <div>
       <ClassInfoEditor cls={cls} onUpdateClass={onUpdateClass} />
-      <OrphanRecovery cls={cls} onUpdateClass={onUpdateClass} />
+      <OrphanRecovery cls={cls} onUpdateClass={onUpdateClass} onPurgeStudent={onPurgeStudent} />
       <StudentEditor cls={cls} knownSchools={knownSchools} studentIndex={studentIndex} onUpdateClass={onUpdateClass} />
       <SubjectEditor cls={cls} onUpdateClass={onUpdateClass} />
       <ScheduleEditor cls={cls} onUpdateClass={onUpdateClass} />
@@ -2481,10 +2522,11 @@ function RosterTab({ cls, knownSchools, studentIndex, onUpdateClass }) {
    the person reattach a name to that exact id so every historical row
    across every tab reconnects immediately — nothing needs to be
    re-entered. */
-function OrphanRecovery({ cls, onUpdateClass }) {
+function OrphanRecovery({ cls, onUpdateClass, onPurgeStudent }) {
   const [loading, setLoading] = useState(true);
   const [orphans, setOrphans] = useState([]);
   const [names, setNames] = useState({});
+  const [purgingId, setPurgingId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -2494,7 +2536,7 @@ function OrphanRecovery({ cls, onUpdateClass }) {
         loadKey(`attendance:${cls.id}`, {}),
         loadKey(`quiz:${cls.id}`, { columns: [], scores: {} }),
         loadKey(`exam:${cls.id}`, { columns: [], scores: {} }),
-        cls.hasFee ? loadKey(`fee:${cls.id}`, { charges: [] }) : Promise.resolve({ charges: [] }),
+        loadKey(`fee:${cls.id}`, { charges: [] }),
       ]);
       const knownIds = new Set(cls.students.map((s) => s.id));
       const info = {}; // id -> { attDates: [], quizCount, examCount, feeCount }
@@ -2533,6 +2575,14 @@ function OrphanRecovery({ cls, onUpdateClass }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cls.id, cls.students.length]);
 
+  async function purge(o) {
+    if (purgingId) return;
+    setPurgingId(o.id);
+    const ok = await onPurgeStudent(o.id);
+    setPurgingId(null);
+    if (ok) setOrphans((prev) => prev.filter((x) => x.id !== o.id));
+  }
+
   function restore(o) {
     const name = (names[o.id] || "").trim();
     if (!name) return;
@@ -2562,6 +2612,12 @@ function OrphanRecovery({ cls, onUpdateClass }) {
           <div className="row-actions">
             <input className="student-input" placeholder="這位是誰？輸入姓名" value={names[o.id] || ""} onChange={(e) => setNames((prev) => ({ ...prev, [o.id]: e.target.value }))} />
             <button className="btn-primary btn-sm" onClick={() => restore(o)}>還原</button>
+            <ConfirmDelete
+              buttonLabel={purgingId === o.id ? "清除中…" : "永久清除全部紀錄"}
+              title="永久清除這位學生在本班的所有歷史資料"
+              label={`將永久刪除這位學生的全部資料：出缺勤 ${o.attCount} 筆、平時考 ${o.quizCount} 筆、段考 ${o.examCount} 筆、收費 ${o.feeCount} 筆。此操作無法復原，確定繼續？`}
+              onConfirm={() => purge(o)}
+            />
           </div>
         </div>
       ))}

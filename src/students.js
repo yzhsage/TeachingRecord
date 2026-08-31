@@ -87,6 +87,46 @@ export function studentDisplay(student, studentIndex, cls) {
   return display;
 }
 
+export function removeStudentFromRecords(studentId, { attendance = {}, quiz = {}, exam = {}, fee = {} } = {}) {
+  const removeId = (records) => Object.fromEntries(
+    Object.entries(records || {}).map(([date, day]) => [date, {
+      ...day,
+      records: Object.fromEntries(Object.entries(day?.records || {}).filter(([id]) => id !== studentId)),
+    }])
+  );
+  const removeScores = (data) => ({
+    ...data,
+    scores: Object.fromEntries(Object.entries(data?.scores || {}).map(([columnId, scores]) => [columnId, Object.fromEntries(Object.entries(scores || {}).filter(([id]) => id !== studentId))])),
+  });
+  return {
+    attendance: removeId(attendance),
+    quiz: removeScores(quiz),
+    exam: removeScores(exam),
+    fee: { ...fee, charges: (fee?.charges || []).filter((charge) => charge.studentId !== studentId) },
+  };
+}
+
+export function removeStudentFromStudentIndex(value, studentId, classId) {
+  const next = normalizeStudentIndex(value);
+  const profile = next[studentId];
+  if (!profile) return next;
+  const enrollments = { ...(profile.enrollments || {}) };
+  const classes = { ...(profile.classes || {}) };
+  if (classId) {
+    delete enrollments[classId];
+    delete classes[classId];
+  } else {
+    delete next[studentId];
+    return next;
+  }
+  if (Object.keys(enrollments).length === 0 && Object.keys(classes).length === 0) {
+    delete next[studentId];
+  } else {
+    next[studentId] = { ...profile, enrollments, classes };
+  }
+  return next;
+}
+
 export function formatStudentSchoolGroup(student) {
   const school = String(student?.school || "").trim();
   const group = String(student?.group || "").trim();
