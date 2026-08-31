@@ -87,6 +87,13 @@ export function studentDisplay(student, studentIndex, cls) {
   return display;
 }
 
+export function formatStudentSchoolGroup(student) {
+  const school = String(student?.school || "").trim();
+  const group = String(student?.group || "").trim();
+  if (school && group) return `${school}．${group}`;
+  return school || group;
+}
+
 export function validateStudentIndex(value) {
   if (!isRecord(value)) return false;
   return Object.entries(value).every(([id, profile]) => typeof id === "string" && isRecord(profile) && (!profile.name || typeof profile.name === "string") && (!profile.school || typeof profile.school === "string") && (!profile.group || typeof profile.group === "string") && (!profile.enrollments || isRecord(profile.enrollments)));

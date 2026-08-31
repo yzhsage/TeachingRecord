@@ -14,7 +14,7 @@ import { db, auth } from "./firebase";
 import { eventTypeMeta, eventDates, eventsOnDate, isContinuousEvent, normalizeEvent } from "./calendar";
 import { assessmentCapacity, buildScoreDistribution, median, numericScore, scoreBand, scoreDelta, scorePercent, studentsEnrolledOnDate, updateAssessmentColumn } from "./assessment";
 import { ATTENDANCE_MODIFIER_STATUSES, ATTENDANCE_STATUSES, attendanceHasStatus, findAttendanceAnomalies, normalizeAttendanceStatus, serializeAttendanceStatus, summarizeAttendanceRecords, toggleAttendanceStatus, wholeDayAttendanceStatus } from "./attendance";
-import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "./students";
+import { formatStudentSchoolGroup, isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "./students";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -1604,7 +1604,7 @@ function AttendanceTab({ cls, date, setDate, onUpdateClass, studentIndex }) {
                   <div key={s.id} className="roll-row">
                     <div className="roll-name">
                       <div>{displayStudent.name}{isTrial && <span className="trial-tag">試</span>}</div>
-                      {displayStudent.school && <div className="roll-school">{displayStudent.school}</div>}
+                      {formatStudentSchoolGroup(displayStudent) && <div className="roll-school">{formatStudentSchoolGroup(displayStudent)}</div>}
                     </div>
                     <div className="status-group">
                       {STATUS_LIST.map((st) => {
@@ -1794,7 +1794,7 @@ function AttendanceOverview({ cls, data, studentIndex, onJump, onUpdateRecord })
           <div className="attendance-section-heading"><div><div className="score-section-title">上課情形矩陣</div><span className="section-hint">完整顯示所有有紀錄日期；固定日期與學生標頭，點擊任一格可直接修改或清除</span></div><span className="section-hint">顯示 {visibleRows.length} 個紀錄日</span></div>
           <div className="matrix-scroll">
             <table className="matrix attendance-matrix">
-              <thead><tr><th className="matrix-corner">日期</th>{displayStudents.map((student) => <th key={student.id} className="matrix-col-head"><div className="matrix-col-name">{student.name}</div><div className="matrix-col-school">{student.school || "未填學校"}</div></th>)}</tr></thead>
+              <thead><tr><th className="matrix-corner">日期</th>{displayStudents.map((student) => <th key={student.id} className="matrix-col-head"><div className="matrix-col-name">{student.name}</div><div className="matrix-col-school">{formatStudentSchoolGroup(student) || "未填學校"}</div></th>)}</tr></thead>
               <tbody>
                 {visibleRows.map(({ date, records }) => (
                   <tr key={date}>

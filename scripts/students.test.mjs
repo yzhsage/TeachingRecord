@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "../src/students.js";
+import { formatStudentSchoolGroup, isStudentStoppedOnDate, mergeStudentIndex, studentDisplay, studentStartDate, validateStudentIndex } from "../src/students.js";
 
 test("student stop date is inclusive and resume date restores membership", () => {
   const student = { endDate: "2026-06-29", resumeDate: "2026-07-10" };
@@ -67,6 +67,13 @@ test("studentDisplay falls back to the student-first profile when class fields a
     school: "甲高中",
     grade: "高中",
   });
+});
+
+test("formatStudentSchoolGroup appends the group only when present", () => {
+  assert.equal(formatStudentSchoolGroup({ school: "二中", group: "數A" }), "二中．數A");
+  assert.equal(formatStudentSchoolGroup({ school: "二中", group: "" }), "二中");
+  assert.equal(formatStudentSchoolGroup({ school: "", group: "數B" }), "數B");
+  assert.equal(formatStudentSchoolGroup({ school: "", group: "" }), "");
 });
 
 test("validateStudentIndex rejects malformed profiles", () => {
