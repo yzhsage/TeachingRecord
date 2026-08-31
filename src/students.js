@@ -52,11 +52,13 @@ export function mergeStudentIndex(value, classes) {
       if (Object.prototype.hasOwnProperty.call(student, "endDate")) enrollment.endDate = student.endDate || "";
       if (Object.prototype.hasOwnProperty.call(student, "resumeDate")) enrollment.resumeDate = student.resumeDate || "";
       if (student.school) enrollment.school = student.school;
+      if (student.group) enrollment.group = student.group;
       next[student.id] = {
         ...previous,
         id: student.id,
         name: student.name || previous.name || "",
         school: student.school || previous.school || "",
+        group: student.group || previous.group || "",
         grade: student.grade || cls.grade || previous.grade || "",
         enrollments: { ...(previous.enrollments || {}), [cls.id]: enrollment },
         classes: {
@@ -72,7 +74,7 @@ export function mergeStudentIndex(value, classes) {
 export function studentDisplay(student, studentIndex, cls) {
   const profile = normalizeStudentIndex(studentIndex)[student?.id] || {};
   const enrollment = profile.enrollments?.[cls?.id] || {};
-  return {
+  const display = {
     ...profile,
     ...(student || {}),
     id: student?.id || profile.id || "",
@@ -80,9 +82,12 @@ export function studentDisplay(student, studentIndex, cls) {
     school: student?.school || enrollment.school || profile.school || "",
     grade: student?.grade || enrollment.grade || profile.grade || cls?.grade || "",
   };
+  const group = student?.group || enrollment.group || profile.group || "";
+  if (group) display.group = group;
+  return display;
 }
 
 export function validateStudentIndex(value) {
   if (!isRecord(value)) return false;
-  return Object.entries(value).every(([id, profile]) => typeof id === "string" && isRecord(profile) && (!profile.name || typeof profile.name === "string") && (!profile.school || typeof profile.school === "string") && (!profile.enrollments || isRecord(profile.enrollments)));
+  return Object.entries(value).every(([id, profile]) => typeof id === "string" && isRecord(profile) && (!profile.name || typeof profile.name === "string") && (!profile.school || typeof profile.school === "string") && (!profile.group || typeof profile.group === "string") && (!profile.enrollments || isRecord(profile.enrollments)));
 }

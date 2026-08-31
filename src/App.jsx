@@ -36,6 +36,7 @@ const STATUS_STYLE = {
 const TRIAL_SESSION_COUNT = 2;
 const CLASS_COLORS = ["#B8863B", "#3F7D5C", "#4C6C99", "#7A5EA8", "#B23A34", "#3E8FA8", "#8C6D3F"];
 const CHART_COLORS = ["#B8863B", "#4C6C99", "#7A5EA8", "#3F7D5C", "#B23A34"];
+const STUDENT_GROUPS = ["", "數A", "數B"];
 
 /* ------------------------------------------------------------------ */
 /* Date helpers                                                        */
@@ -1900,12 +1901,14 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
   const [newSegment, setNewSegment] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("all");
   const [segmentFilter, setSegmentFilter] = useState("all");
+  const [groupFilter, setGroupFilter] = useState("all");
   const [focusStudentId, setFocusStudentId] = useState("");
   const [editingColumnId, setEditingColumnId] = useState(null);
   const [editingColumnName, setEditingColumnName] = useState("");
   const [editingColumnSegment, setEditingColumnSegment] = useState("");
 
   const hasSubjects = (cls.subjects || []).length > 0;
+  const groupOptions = STUDENT_GROUPS;
 
   const [data, setData, ready] = useCachedStore(storageKeyName, { columns: [], scores: {} });
 
@@ -1986,13 +1989,16 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
       const v = (data.scores[col.id] || {})[s.id]?.score;
       return v !== undefined && v !== "";
     });
-  const rosterStudents = cls.students.filter((s) => getMembership(s) !== "stopped" || hasAnyScoreEverywhere(s));
+  const rosterStudents = cls.students
+    .filter((s) => getMembership(s) !== "stopped" || hasAnyScoreEverywhere(s))
+    .filter((s) => groupFilter === "all" || (studentDisplay(s, null, cls).group || "") === groupFilter);
 
   // 每次評量的應計班級人數要以該評量日期判定，不能使用目前表格名單。
   // joinDate／endDate 讓後來入班或已停班學生不會被錯算進歷史評量分母。
   const assessmentColumns = filteredColumns.map((col) => ({
     col,
-    enrolledStudents: studentsEnrolledOnDate(cls.students, col.date),
+    enrolledStudents: studentsEnrolledOnDate(cls.students, col.date)
+      .filter((s) => groupFilter === "all" || (studentDisplay(s, null, cls).group || "") === groupFilter),
   }));
   const pooled = [];
   assessmentColumns.forEach(({ col, enrolledStudents }) => {
@@ -2070,6 +2076,10 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
               {segments.map((seg) => <option key={seg} value={seg}>{seg}</option>)}
             </select>
           )}
+          <select className="filter-select" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} aria-label="分組篩選">
+            <option value="all">全部分組</option>
+            {groupOptions.map((option) => <option key={option || "none"} value={option}>{option || "未分組／不適用"}</option>)}
+          </select>
         </div>
         <div className="row-actions">
           <SaveIndicator status={saveState.status} onRetry={saveState.retry} />
@@ -2158,8 +2168,11 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
               {studentStats.map(({ student, avg, std, count, pr, delta, latest, highest, lowest }) => {
                 const relativeToClass = avg !== null && classAvg !== null ? avg - classAvg : null;
                 return (
-                  <div className="stats-table-row-8" key={student.id}>
-                    <span title={std === null ? "尚無足夠資料計算標準差" : `標準差 ${fmtNum(std)}`}>{student.name}</span>
+                                      <div className="stats-table-row-8" key={student.id}>
+                    <span title={std === null ? "尚無足夠資料計算標準差" : `標準差 ${fmtNum(std)}`}>
+                      {student.name}{student.group && <small className="student-group-tag">{student.group}</small>}
+                    </span>
+
                     <span>{count ? fmtNum(avg) : "—"}</span>
                     <span>{fmtNum(latest)}</span>
                     <span className={delta > 0 ? "stat-positive" : delta < 0 ? "stat-negative" : ""}>{delta === null ? "—" : `${delta > 0 ? "+" : ""}${fmtNum(delta)}`}</span>
@@ -2231,7 +2244,7 @@ function AssessmentTab({ cls, storageKeyName, unitLabel, withSegment, withRank }
               <tbody>
                 {rosterStudents.map((s) => (
                   <tr key={s.id}>
-                    <td className="matrix-row-head">{s.name}</td>
+                    <td className="matrix-row-head">{s.name}{s.group && <small className="student-group-tag">{s.group}</small>}</td>
                     {filteredColumns.map((col) => {
                       const cell = (data.scores[col.id] || {})[s.id] || {};
                       const band = scoreBand(cell.score);
@@ -2617,6 +2630,7 @@ function SchoolField({ value, onChange, knownSchools }) {
 function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
   const [name, setName] = useState("");
   const [school, setSchool] = useState("");
+  const [group, setGroup] = useState("");
   const [isNewStudent, setIsNewStudent] = useState(true);
   const [attendance] = useCachedStore(`attendance:${cls.id}`, {});
 
@@ -2628,9 +2642,9 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
     if (!name.trim()) return;
     onUpdateClass((c) => ({
       ...c,
-      students: [...c.students, { id: genId(), name: name.trim(), school: school.trim(), joinDate: today, forceActive: !isNewStudent }],
+      students: [...c.students, { id: genId(), name: name.trim(), school: school.trim(), group, joinDate: today, forceActive: !isNewStudent }],
     }));
-    setName(""); setSchool("");
+    setName(""); setSchool(""); setGroup("");
   }
   function stop(id) {
     onUpdateClass((c) => ({ ...c, students: c.students.map((s) => (s.id === id ? { ...s, endDate: today, resumeDate: "" } : s)) }));
@@ -2664,6 +2678,9 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
           <div key={s.id} className="student-row">
             <input className="student-input" value={s.name} onChange={(e) => edit(s.id, "name", e.target.value)} placeholder="姓名" />
             <SchoolField value={displayStudent.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
+            <select className="student-input student-group-select" value={displayStudent.group || ""} onChange={(e) => edit(s.id, "group", e.target.value)} aria-label={`${displayStudent.name}分組`}>
+              {STUDENT_GROUPS.map((option) => <option key={option || "none"} value={option}>{option || "未分組／不適用"}</option>)}
+            </select>
             {s.endDate && <button className="btn-ghost btn-xs" title="若先前是誤按停班，可移除停班與復課日期；若要保留離班歷史，請不要按此鈕" onClick={() => cancelStop(s.id)}>撤銷停班紀錄</button>}
             <button className="btn-ghost btn-xs" title="試聽滿兩堂後會自動轉為班內生；這裡可以提前手動轉正，或反向手動延長試聽" onClick={() => toggleForce(s.id, membership)}>
               {membership === "trial" ? <><span className="trial-tag">試</span>轉為班內生</> : "設為試聽生"}
@@ -2678,6 +2695,9 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
       <div className="student-row">
         <input className="student-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="新學生姓名" />
         <SchoolField value={school} knownSchools={knownSchools} onChange={setSchool} />
+        <select className="student-input student-group-select" value={group} onChange={(e) => setGroup(e.target.value)} aria-label="新學生分組">
+          {STUDENT_GROUPS.map((option) => <option key={option || "none"} value={option}>{option || "未分組／不適用"}</option>)}
+        </select>
         <label className="trial-check">
           <input type="checkbox" checked={isNewStudent} onChange={(e) => setIsNewStudent(e.target.checked)} />
           <span>新生（先試聽兩堂）</span>
@@ -2696,6 +2716,9 @@ function StudentEditor({ cls, knownSchools, studentIndex, onUpdateClass }) {
               <div key={s.id} className="student-row student-row-inactive">
                 <input className="student-input student-inactive-name-input" value={s.name || displayStudent.name} onChange={(e) => edit(s.id, "name", e.target.value)} placeholder="姓名" />
                 <SchoolField value={displayStudent.school} knownSchools={knownSchools} onChange={(v) => edit(s.id, "school", v)} />
+                <select className="student-input student-group-select" value={displayStudent.group || ""} onChange={(e) => edit(s.id, "group", e.target.value)} aria-label={`${displayStudent.name}分組`}>
+                  {STUDENT_GROUPS.map((option) => <option key={option || "none"} value={option}>{option || "未分組／不適用"}</option>)}
+                </select>
                 <span className="student-inactive-date">{s.endDate ? `停班於 ${s.endDate}` : ""}</span>
                 <button className="btn-primary btn-xs" title="誤按停班時清除停班日期，保留原本學生 ID 與歷史紀錄" onClick={() => cancelStop(s.id)}>撤銷停班</button>
                 <button className="btn-ghost btn-xs" title="保留停班歷史，從今天開始復課" onClick={() => reactivate(s.id)}>今天復課</button>
@@ -3137,6 +3160,8 @@ const CSS = `
 .view-pad-attendance .attendance-matrix .matrix-col-school { white-space: normal; line-height: 1.35; min-height: 15px; }
 .student-inactive-name-input { min-width: 135px; }
 .student-row-inactive .student-input { min-width: 135px; }
+.student-group-select { flex: 0 1 132px; min-width: 118px; }
+.student-group-tag { display: inline-block; margin-left: 5px; padding: 1px 5px; border-radius: 999px; background: #E9EFF6; color: #3F5E8C; font-size: 10px; font-weight: 700; vertical-align: middle; }
 .attendance-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .attendance-editor-heading strong, .attendance-editor-heading span { display: block; }
 .attendance-editor-heading span { margin-top: 2px; color: var(--ink-soft); font-size: 11px; }
@@ -3244,6 +3269,7 @@ const CSS = `
   .view-pad-attendance .attendance-matrix .attendance-cell-button { min-width: 54px; min-height: 28px; }
   .view-pad-attendance .attendance-matrix .matrix-col-school { white-space: nowrap; }
   .student-row-inactive .student-input, .student-inactive-name-input { min-width: 0; width: 100%; }
+  .student-group-select { min-width: 0; width: 100%; }
   .attendance-editor-drawer { bottom: 8px; width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
   .attendance-editor-actions { grid-template-columns: auto 1fr auto auto; }
   .score-dashboard-heading { flex-direction: column; gap: 2px; }

@@ -28,7 +28,7 @@ test("mergeStudentIndex builds one student profile with per-class enrollment rec
       name: "高中數學班",
       subject: "數學",
       grade: "高中",
-      students: [{ id: "wu", name: "吳亭儀", school: "甲高中", joinDate: "2026-03-01", endDate: "2026-06-29" }],
+      students: [{ id: "wu", name: "吳亭儀", school: "甲高中", group: "數A", joinDate: "2026-03-01", endDate: "2026-06-29" }],
     },
     {
       id: "physics",
@@ -42,12 +42,14 @@ test("mergeStudentIndex builds one student profile with per-class enrollment rec
   assert.equal(index.wu.name, "吳亭儀");
   assert.equal(index.wu.school, "乙高中");
   assert.equal(index.wu.enrollments.math.school, "甲高中");
+  assert.equal(index.wu.enrollments.math.group, "數A");
   assert.equal(index.wu.enrollments.math.joinDate, "2026-03-01");
   assert.equal(index.wu.enrollments.math.endDate, "2026-06-29");
   assert.equal(index.wu.enrollments.physics.school, "乙高中");
   assert.equal(index.wu.enrollments.physics.joinDate, "2026-04-02");
   assert.equal(index.wu.enrollments.physics.endDate, undefined);
   assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, index, { id: "math", grade: "高中" }).school, "甲高中");
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "", group: "" }, index, { id: "math", grade: "高中" }).group, "數A");
   assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, index, { id: "physics", grade: "高中" }).school, "乙高中");
 });
 
