@@ -52,7 +52,7 @@ export function mergeStudentIndex(value, classes) {
       if (Object.prototype.hasOwnProperty.call(student, "endDate")) enrollment.endDate = student.endDate || "";
       if (Object.prototype.hasOwnProperty.call(student, "resumeDate")) enrollment.resumeDate = student.resumeDate || "";
       if (student.school) enrollment.school = student.school;
-      if (student.group) enrollment.group = student.group;
+      if (Object.prototype.hasOwnProperty.call(student, "group")) enrollment.group = student.group || "";
       next[student.id] = {
         ...previous,
         id: student.id,
@@ -82,8 +82,11 @@ export function studentDisplay(student, studentIndex, cls) {
     school: student?.school || enrollment.school || profile.school || "",
     grade: student?.grade || enrollment.grade || profile.grade || cls?.grade || "",
   };
-  const group = student?.group || enrollment.group || profile.group || "";
+  const hasStudentGroup = Object.prototype.hasOwnProperty.call(student || {}, "group");
+  const hasEnrollmentGroup = Object.prototype.hasOwnProperty.call(enrollment, "group");
+  const group = hasStudentGroup ? String(student.group || "").trim() : hasEnrollmentGroup ? String(enrollment.group || "").trim() : cls ? "" : String(profile.group || "").trim();
   if (group) display.group = group;
+  else delete display.group;
   return display;
 }
 

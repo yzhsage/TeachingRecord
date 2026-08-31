@@ -49,8 +49,17 @@ test("mergeStudentIndex builds one student profile with per-class enrollment rec
   assert.equal(index.wu.enrollments.physics.joinDate, "2026-04-02");
   assert.equal(index.wu.enrollments.physics.endDate, undefined);
   assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, index, { id: "math", grade: "高中" }).school, "甲高中");
-  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "", group: "" }, index, { id: "math", grade: "高中" }).group, "數A");
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "", group: "" }, index, { id: "math", grade: "高中" }).group, undefined);
   assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", school: "" }, index, { id: "physics", grade: "高中" }).school, "乙高中");
+});
+
+test("studentDisplay keeps an explicit blank group in the current class", () => {
+  const index = {
+    wu: { id: "wu", name: "吳亭儀", group: "數B", enrollments: { math: { group: "" }, physics: { group: "數A" } } },
+  };
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀", group: "" }, index, { id: "math" }).group, undefined);
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀" }, index, { id: "math" }).group, undefined);
+  assert.equal(studentDisplay({ id: "wu", name: "吳亭儀" }, index, { id: "physics" }).group, "數A");
 });
 
 test("studentDisplay prefers the class enrollment school before the global fallback", () => {
